@@ -1,0 +1,70 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: mkp-pet
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/mkp_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    type: com.alibaba.druid.pool.DruidDataSource
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        ip: 127.0.0.1
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
+
+oss:
+  endpoint: oss-cn-beijing.aliyuncs.com
+  bucket-name: ${OSS_BUCKET_NAME}
+  access-key-id: ${OSS_ACCESS_KEY_ID}
+  access-key-secret: ${OSS_ACCESS_KEY_SECRET}
+
+mybatis-plus:
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  configuration:
+    map-underscore-to-camel-case: true
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
+# 交易超时策略（对应 config/TradeSettings 与 task/TradeTimeoutTask）
+mkp:
+  trade:
+    pay-timeout-minutes: 30    # 待支付超过多少分钟 → 自动关单并释放发布单
+    auto-confirm-hours: 72     # 超时未确认收货/结算超过多少小时 → 系统自动确认并结算
+    scan-limit: 200            # 每轮扫描最多处理多少笔
+    scan-delay-ms: 60000       # 扫描间隔
+    min-start-lead-minutes: 5  # 发布寄养时，开始时间至少距现在多少分钟（不足则打断发布）
+  notify:
+    enabled: true
+    pre-start-hours: 24        # 开始前多少小时发"预告"私信
+    scan-limit: 200            # 每轮最多处理多少笔
+    scan-delay-ms: 600000      # 过期提醒扫描间隔（10 分钟）
+    max-retry: 3               # 同一条通知最多尝试几次
+  chat:
+    base-url: http://localhost:8084   # 服务间内部调用 mkp-chat（不经网关、不依赖服务发现）
+  internal:
+    token: mkp-internal-dev-token     # mkp-chat 内部接口校验令牌，两边必须一致

@@ -1,0 +1,22 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: mkp-pet-service
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        ip: 127.0.0.1
+
+deepseek:
+  api-key: ${DEEPSEEK_API_KEY}
+  api-url: https://api.deepseek.com/v1/chat/completions
+  model: deepseek-chat
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

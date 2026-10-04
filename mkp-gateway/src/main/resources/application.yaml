@@ -1,0 +1,70 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: mkp-gateway
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        ip: 127.0.0.1
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: mkp-auth
+          uri: lb://mkp-auth
+          predicates:
+            - Path=/api/auth/**
+        - id: mkp-user
+          uri: lb://mkp-user
+          predicates:
+            - Path=/api/user/**
+        - id: mkp-post
+          uri: lb://mkp-post
+          predicates:
+            - Path=/api/post/**
+        - id: mkp-chat
+          uri: lb://mkp-chat
+          predicates:
+            - Path=/api/message/**
+        - id: mkp-chatbot
+          uri: lb://mkp-chatbot
+          predicates:
+            - Path=/api/chatbot/**
+        - id: mkp-pet
+          uri: lb://mkp-pet
+          predicates:
+            - Path=/api/posting/**,/api/apply/**,/api/trade/**,/api/review/**,/api/wallet/**
+        - id: mkp-pet-service
+          uri: lb://mkp-pet-service
+          predicates:
+            - Path=/api/pet-service/**
+        - id: mkp-admin-pet
+          uri: lb://mkp-pet
+          predicates:
+            - Path=/api/admin/wallet/**
+        - id: mkp-admin-user
+          uri: lb://mkp-user
+          predicates:
+            - Path=/api/admin/user/**,/api/admin/stats/**
+        - id: mkp-admin-post
+          uri: lb://mkp-post
+          predicates:
+            - Path=/api/admin/post/**,/api/admin/comment/**
+        - id: mkp-admin-chatbot
+          uri: lb://mkp-chatbot
+          predicates:
+            - Path=/api/admin/chatbot/**

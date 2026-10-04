@@ -1,0 +1,67 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: mkp-post
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/mkp_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    type: com.alibaba.druid.pool.DruidDataSource
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        ip: 127.0.0.1
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+  elasticsearch:
+    # 本机 Docker 里的 mkp-es（7.17.22）；可用环境变量 ES_URI 覆盖
+    uris: ${ES_URI:http://127.0.0.1:9200}
+    connection-timeout: 3s
+    socket-timeout: 10s
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
+
+mkp:
+  post-view:
+    flush-delay-ms: 5000
+  post:
+    search:
+      # 置为 false 时跳过 ES，检索完全走 MySQL LIKE 降级
+      enabled: ${ES_SEARCH_ENABLED:true}
+  post-author-index:
+    # 用户改名后，作者帖子索引的刷新间隔
+    flush-delay-ms: 3000
+
+oss:
+  endpoint: oss-cn-beijing.aliyuncs.com
+  bucket-name: ${OSS_BUCKET_NAME}
+  access-key-id: ${OSS_ACCESS_KEY_ID}
+  access-key-secret: ${OSS_ACCESS_KEY_SECRET}
+
+mybatis-plus:
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  configuration:
+    map-underscore-to-camel-case: true
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
