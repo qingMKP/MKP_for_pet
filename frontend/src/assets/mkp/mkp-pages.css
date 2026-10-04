@@ -1,0 +1,153 @@
+/* ==========================================================================
+   MKP 页面级设计语言（发布交易 / 我的交易 / 宠物服务）
+   - 视觉来源：液态玻璃卡片 + 黄蓝不规则色块 + Pill 胶囊（重构稿）
+   - 仅被这三个页面 import；顶栏沿用 --mkp-* token 与交易市场 / 社交广场一致
+   ========================================================================== */
+
+/* ---------- 页面根与配色 ---------- */
+.mkp-page {
+  --pg-ink: #18181b;
+  --pg-ink2: #52525b;
+  --pg-ink3: #a1a1aa;
+  --pg-line: rgba(0, 0, 0, .08);
+  --pg-amber: #ffb800;
+  --pg-amber-2: #f59e0b;
+  --pg-amber-deep: #b45309;
+  --pg-blue: #2563eb;
+  --pg-blue-deep: #1d4ed8;
+  --pg-rose: #e11d48;
+  font-family: var(--mkp-font);
+  background: #f6f5f0;
+  color: #18181b;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+.mkp-page a { text-decoration: none; color: inherit; }
+.mkp-page h1, .mkp-page h2, .mkp-page h3, .mkp-page h4 { margin: 0; }
+.mkp-page button { font-family: inherit; }
+.mkp-page > .pm-main { flex: 1 0 auto; position: relative; z-index: 1; }
+.pg-wrap { width: min(1360px, 100% - 64px); margin-inline: auto; position: relative; z-index: 1; padding: 26px 0 32px; }
+
+/* ---------- 背景黄蓝色块（每页一套，position:fixed 不随滚动） ---------- */
+.bg-layer { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.blob { position: absolute; transition: all 1.2s cubic-bezier(.4, 0, .2, 1); }
+/* 发布交易：左上暖黄大弧 + 右下克莱因蓝 + 呼应小点 */
+.pg-publish .bg-layer .b1 { top: -12%; left: -8%; width: 48vw; height: 48vw; max-width: 620px; max-height: 620px; background: #ffb800; border-radius: 42% 58% 65% 35% / 45% 40% 60% 55%; }
+.pg-publish .bg-layer .b2 { bottom: -15%; right: -8%; width: 50vw; height: 42vw; max-width: 650px; max-height: 520px; background: #2563eb; border-radius: 65% 35% 45% 55% / 55% 40% 60% 45%; }
+.pg-publish .bg-layer .b3 { top: 18%; right: 6%; width: 140px; height: 140px; background: #ffc200; border-radius: 50% 50% 30% 70% / 60% 40% 60% 40%; }
+.pg-publish .bg-layer .b4 { bottom: 12%; left: 4%; width: 110px; height: 110px; background: #2563eb; border-radius: 40% 60% 70% 30% / 50% 30% 70% 50%; }
+/* 我的交易：右上克莱因蓝 + 左下暖黄 + 左侧小蓝点 */
+.pg-trades .bg-layer .b1 { top: -15%; right: -10%; width: 55vw; height: 55vw; max-width: 720px; max-height: 720px; background: #2563eb; border-radius: 35% 65% 40% 60% / 50% 35% 65% 50%; }
+.pg-trades .bg-layer .b2 { bottom: -18%; left: -10%; width: 52vw; height: 52vw; max-width: 680px; max-height: 680px; background: #ffb800; border-radius: 60% 40% 65% 35% / 45% 55% 45% 55%; }
+.pg-trades .bg-layer .b3 { top: 40%; left: 2%; width: 80px; height: 80px; background: #2563eb; border-radius: 50%; }
+/* 宠物服务：左下暖黄大弧 + 右上克莱因蓝 + 右下黄蓝重叠角（黄主蓝辅） */
+.pg-services .bg-layer .b1 { bottom: -28%; left: -10%; width: 52vw; height: 38vw; max-width: 740px; max-height: 500px; background: #ffb800; border-radius: 42% 58% 65% 35% / 45% 40% 60% 55%; opacity: .88; }
+.pg-services .bg-layer .b2 { top: -22%; right: -12%; width: 44vw; height: 44vw; max-width: 620px; max-height: 620px; background: #2563eb; border-radius: 58% 42% 40% 60% / 55% 45% 55% 45%; opacity: .75; }
+.pg-services .bg-layer .b3 { bottom: 6%; right: 5%; width: 170px; height: 170px; background: #2563eb; border-radius: 45% 55% 60% 40% / 50% 40% 60% 50%; opacity: .5; }
+.pg-services .bg-layer .b4 { bottom: 9%; right: 16%; width: 104px; height: 104px; background: #ffca28; border-radius: 50%; opacity: .85; }
+
+
+/* 个人中心：左上克莱因蓝 + 右下暖黄 + 右侧小蓝点 */
+.pg-profile .bg-layer .b1 { top: -18%; left: -12%; width: 50vw; height: 50vw; max-width: 660px; max-height: 660px; background: #2563eb; border-radius: 42% 58% 55% 45% / 52% 40% 60% 48%; opacity: .9; }
+.pg-profile .bg-layer .b2 { bottom: -20%; right: -10%; width: 54vw; height: 44vw; max-width: 700px; max-height: 560px; background: #ffb800; border-radius: 58% 42% 60% 40% / 45% 55% 45% 55%; }
+.pg-profile .bg-layer .b3 { top: 34%; right: 4%; width: 96px; height: 96px; background: #2563eb; border-radius: 50%; opacity: .85; }
+/* 私信：右上克莱因蓝 + 左下暖黄 + 左侧小黄点 */
+.pg-msg .bg-layer .b1 { top: -20%; right: -12%; width: 48vw; height: 48vw; max-width: 620px; max-height: 620px; background: #2563eb; border-radius: 40% 60% 52% 48% / 50% 45% 55% 50%; opacity: .8; }
+.pg-msg .bg-layer .b2 { bottom: -22%; left: -12%; width: 50vw; height: 40vw; max-width: 660px; max-height: 520px; background: #ffb800; border-radius: 55% 45% 62% 38% / 45% 55% 45% 55%; opacity: .9; }
+.pg-msg .bg-layer .b3 { top: 26%; left: 3%; width: 84px; height: 84px; background: #ffc200; border-radius: 50%; opacity: .9; }
+
+/* 帖子详情：左上暖黄 + 右下克莱因蓝 + 左侧小点 */
+.pg-post .bg-layer .b1 { top: -16%; left: -10%; width: 46vw; height: 46vw; max-width: 620px; max-height: 620px; background: #ffb800; border-radius: 44% 56% 62% 38% / 50% 42% 58% 50%; opacity: .9; }
+.pg-post .bg-layer .b2 { bottom: -22%; right: -12%; width: 52vw; height: 46vw; max-width: 680px; max-height: 600px; background: #2563eb; border-radius: 56% 44% 40% 60% / 45% 55% 45% 55%; opacity: .88; }
+.pg-post .bg-layer .b3 { top: 46%; left: 1.5%; width: 88px; height: 88px; background: #2563eb; border-radius: 50%; opacity: .85; }
+
+/* ---------- 液态玻璃卡片 ---------- */
+.glass { background: rgba(255, 255, 255, .62); backdrop-filter: blur(32px) saturate(180%); -webkit-backdrop-filter: blur(32px) saturate(180%); border: 1.5px solid rgba(255, 255, 255, .85); box-shadow: 0 20px 50px rgba(0, 0, 0, .03), 0 2px 6px rgba(255, 255, 255, .7) inset; border-radius: 24px; }
+.glass-sub { background: rgba(255, 255, 255, .75); backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%); border: 1px solid rgba(255, 255, 255, .9); box-shadow: 0 4px 16px rgba(0, 0, 0, .02); border-radius: 16px; }
+
+/* ---------- 徽标 / 状态标签 ---------- */
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.badge-amber { background: rgba(254, 243, 199, .9); border: 1px solid rgba(252, 211, 77, .7); color: #78350f; }
+.badge-blue { background: rgba(219, 234, 254, .9); border: 1px solid rgba(147, 197, 253, .8); color: #1e40af; }
+.st { padding: 2px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; border: 1px solid transparent; white-space: nowrap; }
+.st-amber { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.st-blue { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+.st-green { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.st-rose { background: #ffe4e6; color: #9f1239; border-color: #fecdd3; }
+.st-zinc { background: #f4f4f5; color: #3f3f46; border-color: #e4e4e7; }
+
+/* ---------- 按钮 ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: none; cursor: pointer; border-radius: 999px; font-size: 12px; font-weight: 600; padding: 9px 20px; transition: all .2s var(--mkp-ease); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn-sm { padding: 7px 16px; font-size: 11.5px; }
+.btn-dark { background: #18181b; color: #fff; box-shadow: 0 8px 20px rgba(0, 0, 0, .12); font-weight: 700; }
+.btn-dark:hover:not(:disabled) { background: #27272a; }
+.btn-ghost { background: rgba(255, 255, 255, .9); border: 1px solid var(--pg-line); color: #27272a; }
+.btn-ghost:hover:not(:disabled) { background: #fff; border-color: rgba(0, 0, 0, .16); }
+.btn-soft { background: #e4e4e7; color: #3f3f46; }
+.btn-soft:hover:not(:disabled) { background: #d4d4d8; }
+.btn-blue { background: var(--pg-blue); color: #fff; box-shadow: 0 8px 20px rgba(37, 99, 235, .22); }
+.btn-blue:hover:not(:disabled) { background: var(--pg-blue-deep); }
+.btn-danger { background: transparent; border: 1px solid rgba(225, 29, 72, .35); color: var(--pg-rose); }
+.btn-danger:hover:not(:disabled) { background: rgba(225, 29, 72, .06); }
+
+/* ---------- Pill 胶囊标签页 ---------- */
+.pill-tabs { display: inline-flex; align-items: center; gap: 6px; background: rgba(244, 244, 245, .9); padding: 4px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .8); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .04); }
+.pill { border: none; cursor: pointer; font-size: 11.5px; font-weight: 600; padding: 7px 16px; border-radius: 999px; color: #52525b; background: transparent; transition: all .25s cubic-bezier(.4, 0, .2, 1); white-space: nowrap; }
+.pill:hover { color: #18181b; background: rgba(255, 255, 255, .85); }
+.pill.is-on { background: #18181b; color: #fff; box-shadow: 0 4px 12px rgba(0, 0, 0, .12); }
+
+/* ---------- 表单（限定在 .mkp-page 内，避免影响其他页面） ---------- */
+.fld { display: block; }
+.fld > span { display: block; font-size: 11.5px; font-weight: 600; color: #3f3f46; margin-bottom: 6px; }
+.mkp-page input, .mkp-page select, .mkp-page textarea { font-family: inherit; font-size: 12px; color: #27272a; background: rgba(255, 255, 255, .8); border: 1px solid rgba(0, 0, 0, .1); border-radius: 12px; padding: 10px 14px; width: 100%; outline: none; transition: border-color .2s var(--mkp-ease), box-shadow .2s var(--mkp-ease); }
+.mkp-page input::placeholder, .mkp-page textarea::placeholder { color: #a1a1aa; }
+.mkp-page input:focus, .mkp-page select:focus, .mkp-page textarea:focus { border-color: rgba(245, 158, 11, .8); box-shadow: 0 0 0 3px rgba(251, 191, 36, .25); background: #fff; }
+.mkp-page textarea { resize: vertical; line-height: 1.6; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.divider { height: 1px; background: rgba(0, 0, 0, .07); margin: 18px 0; }
+.fld-hint { font-size: 11.5px; color: #71717a; margin: 10px 0 0; line-height: 1.6; }
+
+/* ---------- 上传 / 胶囊小按钮 ---------- */
+.uploader { display: block; border: 2px dashed rgba(0, 0, 0, .14); border-radius: 16px; padding: 22px; text-align: center; background: rgba(255, 255, 255, .45); cursor: pointer; transition: all .2s var(--mkp-ease); }
+.uploader:hover { background: rgba(255, 255, 255, .7); border-color: rgba(245, 158, 11, .6); }
+.uploader svg { color: #a1a1aa; margin-bottom: 8px; }
+.uploader p { margin: 0; font-size: 11.5px; color: #71717a; }
+.thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.thumb-item { position: relative; width: 84px; height: 84px; border-radius: 14px; overflow: hidden; border: 1px solid rgba(0, 0, 0, .08); background: #fff; }
+.thumb-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-x { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: none; cursor: pointer; background: rgba(9, 9, 11, .62); color: #fff; display: grid; place-items: center; }
+.chip { border: 1px solid rgba(0, 0, 0, .08); background: rgba(255, 255, 255, .8); color: #52525b; font-size: 11px; font-weight: 600; padding: 5px 12px; border-radius: 999px; cursor: pointer; transition: all .2s var(--mkp-ease); }
+.chip:hover { background: #fff; color: #18181b; border-color: rgba(0, 0, 0, .16); }
+.sug { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sug > span { font-size: 11px; color: #a1a1aa; }
+
+/* ---------- 空态 / 加载 ---------- */
+.pg-empty { text-align: center; padding: 46px 20px; color: #a1a1aa; }
+.pg-empty .ico { width: 72px; height: 72px; margin: 0 auto 14px; border-radius: 22px; display: grid; place-items: center; font-size: 28px; background: linear-gradient(135deg, rgba(254, 243, 199, .9), rgba(239, 246, 255, .9)); }
+.pg-empty h4 { font-size: 14px; font-weight: 700; color: #52525b; margin-bottom: 6px; }
+.pg-empty p { font-size: 12px; margin: 0; }
+.sp { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(0, 0, 0, .12); border-top-color: #18181b; animation: pg-spin .7s linear infinite; display: inline-block; }
+.sp.is-light { border-color: rgba(255, 255, 255, .35); border-top-color: #fff; }
+@keyframes pg-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 页脚（实底，避免色块压字） ---------- */
+.m-page-foot { border-top: 1px solid var(--mkp-line); margin-top: 40px; position: relative; z-index: 1; background: #f6f5f0; }
+.m-page-foot-inner { width: min(1360px, 100% - 64px); margin-inline: auto; min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; color: var(--mkp-ink3); }
+
+/* ---------- 弹窗（评价等） ---------- */
+.pg-scrim { position: fixed; inset: 0; z-index: 200; background: rgba(28, 24, 19, .46); display: grid; place-items: center; padding: 24px; }
+.pg-modal { width: 100%; max-width: 460px; background: #fff; border-radius: 20px; padding: 22px; box-shadow: var(--mkp-sh2); }
+.pg-modal h3 { font-size: 16px; font-weight: 800; margin-bottom: 16px; }
+.pg-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* ---------- 响应式（桌面优先） ---------- */
+@media (max-width: 860px) {
+  .pg-wrap, .m-page-foot-inner { width: calc(100% - 36px); }
+  .form-grid { grid-template-columns: 1fr; }
+  .pg-wrap { padding-top: 18px; }
+}
+@media (prefers-reduced-motion: reduce) { .blob { transition: none !important; } }

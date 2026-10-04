@@ -36,5 +36,3 @@ build/
 
 .env*
 !.env.example
-# frontend not committed yet: delete this line (or run: git add -f frontend) to include it later
-frontend/
