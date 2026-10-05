@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { getUnreadCount } from '../api'
 import '../assets/mkp/mkp.css'
 
 /* ==========================================================================
@@ -35,6 +36,7 @@ const nav = [
 
 const q = ref('')
 const scrolled = ref(false)
+const unread = ref(0)
 const searchRef = ref(null)
 
 function submitSearch () {
@@ -51,12 +53,17 @@ function onKey (e) {
 }
 
 let disposeScroll = null
-onMounted(() => {
+onMounted(async () => {
   const onScroll = () => { scrolled.value = window.scrollY > 4 }
   window.addEventListener('scroll', onScroll, { passive: true })
   disposeScroll = () => window.removeEventListener('scroll', onScroll)
   onScroll()
   document.addEventListener('keydown', onKey)
+  try {
+    unread.value = (await getUnreadCount()) || 0
+  } catch {
+    /* 未读数拿不到就不显示红点 */
+  }
 })
 onBeforeUnmount(() => {
   if (disposeScroll) disposeScroll()
@@ -101,6 +108,10 @@ onBeforeUnmount(() => {
           发布交易
         </button>
         <slot name="actions" />
+        <router-link class="s-msg" to="/messages" :aria-label="'私信' + (unread > 0 ? '（未读 ' + unread + '）' : '')">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"/></svg>
+          <i v-if="unread > 0" class="s-msg-dot" aria-hidden="true">{{ unread > 99 ? '99+' : unread }}</i>
+        </router-link>
         <router-link class="s-me" to="/profile" :aria-label="'个人中心：' + me.nickname">
           <img class="mkp-avatar" :src="me.avatar || DEMO_AV" alt="" width="34" height="34" />
         </router-link>
@@ -131,6 +142,14 @@ onBeforeUnmount(() => {
 .s-search kbd { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 10.5px; color: var(--mkp-ink3); border: 1px solid var(--mkp-line); background: var(--mkp-surface2); border-radius: 5px; padding: 1px 6px; }
 .s-btn-post { display: inline-flex; align-items: center; gap: 6px; background: var(--mkp-ink); color: #fff; border: none; padding: 9px 17px; border-radius: 999px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: opacity .2s var(--mkp-ease), transform .2s var(--mkp-ease); }
 .s-btn-post:hover { opacity: .88; transform: translateY(-1px); }
+.s-msg { position: relative; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: var(--mkp-ink2); transition: background .18s var(--mkp-ease), color .18s var(--mkp-ease); }
+.s-msg:hover { background: var(--mkp-surface2); color: var(--mkp-ink); }
+.s-msg .s-msg-dot {
+  position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--mkp-danger); color: #fff; font-style: normal;
+  font-size: 10px; font-weight: 700; line-height: 1; display: grid; place-items: center;
+  box-shadow: 0 0 0 2px #fff;
+}
 .s-me { display: grid; place-items: center; text-decoration: none; }
 .s-me .mkp-avatar { width: 34px; height: 34px; border: 1px solid var(--mkp-line); }
 @media (max-width: 1180px) { .s-top.is-wide .s-top-inner { width: calc(100% - 40px); } }

@@ -17,7 +17,7 @@
         </router-link>
         <router-link class="d-icon" to="/messages" aria-label="私信（未读 {{ unread }}）">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"/></svg>
-          <span v-if="unread > 0" class="d-dot" aria-hidden="true"></span>
+          <i v-if="unread > 0" class="d-dot" aria-hidden="true">{{ unread > 99 ? '99+' : unread }}</i>
         </router-link>
         <router-link class="d-icon" to="/profile" aria-label="个人中心：{{ user.nickname }}">
           <img class="mkp-avatar d-avatar" :src="user.avatar || demoAvatar" alt="" />
@@ -186,9 +186,9 @@ onBeforeUnmount(() => {
 }
 .d-icon:hover { background: #fff; color: var(--mkp-ink); box-shadow: var(--mkp-sh1); }
 .d-icon .d-dot {
-  position: absolute; top: 7px; right: 8px;
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--mkp-accent);
+  position: absolute; top: 2px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--mkp-danger); color: #fff; font-style: normal;
+  font-size: 10px; font-weight: 700; line-height: 1; display: grid; place-items: center;
   box-shadow: 0 0 0 2px var(--mkp-paper);
 }
 .d-avatar { width: 30px; height: 30px; }

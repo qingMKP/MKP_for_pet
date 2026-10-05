@@ -37,6 +37,10 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
             发布交易
           </button>
+          <router-link class="s-msg" to="/messages" :aria-label="'私信' + (unread > 0 ? '（未读 ' + unread + '）' : '')">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"/></svg>
+            <i v-if="unread > 0" class="s-msg-dot" aria-hidden="true">{{ unread > 99 ? '99+' : unread }}</i>
+          </router-link>
           <router-link class="s-me" to="/profile" :aria-label="'个人中心：' + me.nickname">
             <img class="mkp-avatar" :src="me.avatar || DEMO_AV" alt="" width="34" height="34" />
           </router-link>
@@ -280,7 +284,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import '../assets/mkp/mkp.css'
-import { getPostingList, applyPosting, offPosting } from '../api'
+import { getPostingList, applyPosting, offPosting, getUnreadCount } from '../api'
 import { CATEGORY, GENDER, POSTING_STATUS, fmtPrice, fmtTime } from '../utils/constants'
 import { toastSuccess } from '../utils/toast'
 
@@ -316,6 +320,16 @@ const kind = ref('all')
 const sort = ref('new')
 const query = ref(String(route.query.q || ''))
 const scrolled = ref(false)
+const unread = ref(0)
+
+/* 顶栏私信未读数 */
+async function loadUnread () {
+  try {
+    unread.value = (await getUnreadCount()) || 0
+  } catch {
+    /* 忽略 */
+  }
+}
 const searchRef = ref(null)
 
 /* 顶栏搜索带过来的关键词（/market?q=xxx） */
@@ -563,6 +577,7 @@ function onKey (e) {
 let disposeScroll = null
 onMounted(() => {
   load()
+  loadUnread()
   const onScroll = () => { scrolled.value = window.scrollY > 4 }
   window.addEventListener('scroll', onScroll, { passive: true })
   disposeScroll = () => window.removeEventListener('scroll', onScroll)
@@ -645,6 +660,14 @@ onBeforeUnmount(() => {
   cursor: pointer; transition: opacity .2s var(--mkp-ease), transform .2s var(--mkp-ease);
 }
 .s-btn-post:hover { opacity: .88; transform: translateY(-1px); }
+.s-msg { position: relative; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: var(--mkp-ink2); transition: background .18s var(--mkp-ease), color .18s var(--mkp-ease); }
+.s-msg:hover { background: var(--mkp-surface2); color: var(--mkp-ink); }
+.s-msg .s-msg-dot {
+  position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--mkp-danger); color: #fff; font-style: normal;
+  font-size: 10px; font-weight: 700; line-height: 1; display: grid; place-items: center;
+  box-shadow: 0 0 0 2px #fff;
+}
 .s-me { display: grid; place-items: center; }
 .s-me .mkp-avatar { width: 34px; height: 34px; border: 1px solid var(--mkp-line); }
 

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import MkpTopNav from '../components/MkpTopNav.vue'
 import '../assets/mkp/mkp.css'
@@ -21,6 +22,8 @@ import { toastSuccess, toastError } from '../utils/toast'
    - 版式：形象卡 + 资料设置 + 我的钱包（余额 / 冻结 / 合计 + 流水）+ 收到的评价
    - 数据：/api/user/profile、/api/review/user/:id、/api/wallet/me
    ================================================================ */
+const router = useRouter()
+
 const profile = ref(null)
 const edit = ref({ nickname: '', phone: '', avatar: '' })
 const saving = ref(false)
@@ -125,6 +128,11 @@ async function save () {
   }
 }
 
+function logout () {
+  localStorage.clear()
+  router.push('/login')
+}
+
 onMounted(async () => {
   await Promise.all([load(), loadWallet()])
   ready.value = true
@@ -176,6 +184,9 @@ onMounted(async () => {
               <AppIcon name="message" :size="14" />私信
               <i v-if="unread" class="pf-msg-dot">{{ unread > 99 ? '99+' : unread }}</i>
             </router-link>
+            <button class="btn btn-ghost pf-logout" type="button" @click="logout">
+              <AppIcon name="logout" :size="14" />退出登录
+            </button>
             <button class="btn btn-ghost" type="button" @click="avatarInput.click()">
               <AppIcon name="image" :size="14" />更换头像
             </button>
@@ -331,6 +342,7 @@ onMounted(async () => {
 .pf-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .pf-actions { display: flex; align-items: center; gap: 10px; flex: none; }
 .pf-msg { position: relative; }
+.pf-logout:hover { color: #b42318; border-color: rgba(180, 35, 24, .28); }
 .pf-msg-dot {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
   background: var(--pg-rose); color: #fff; font-size: 10.5px; font-weight: 700; font-style: normal;
