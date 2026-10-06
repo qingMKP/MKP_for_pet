@@ -16,7 +16,6 @@ const router = useRouter()
 
 const mode = ref('login')
 const form = ref({ username: '', password: '', nickname: '' })
-const remember = ref(true)
 const showPwd = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -73,10 +72,6 @@ async function submit () {
   } finally {
     loading.value = false
   }
-}
-
-function notReady (what) {
-  toast(`${what}暂未开放，请使用账号密码登录`)
 }
 </script>
 
@@ -138,7 +133,6 @@ function notReady (what) {
     <!-- ================= 前景：左侧暖色玻璃面板 ================= -->
     <section class="panel">
       <header class="panel-brand">
-        <span class="brand-pill"><AppIcon name="paw" :size="12" />MKP 宠物社区会员通行证</span>
         <h1>欢迎回到 MKP 宠物社区</h1>
         <p class="brand-sub">把治愈，收藏成一种习惯</p>
       </header>
@@ -192,14 +186,6 @@ function notReady (what) {
               </span>
             </label>
 
-            <div class="row-between">
-              <label class="checkbox">
-                <input v-model="remember" type="checkbox" />
-                <span>记住登录</span>
-              </label>
-              <button class="link" type="button" @click="notReady('密码重置')">忘记密码？</button>
-            </div>
-
             <p v-if="error" class="err"><AppIcon name="x" :size="13" />{{ error }}</p>
 
             <button class="submit submit--dark" type="submit" :disabled="loading">
@@ -251,25 +237,7 @@ function notReady (what) {
               <span>{{ loading ? '注册中…' : '同意协议并注册' }}</span>
             </button>
           </form>
-
-          <!-- 快捷登录 -->
-          <div class="social">
-            <span>快捷方式登录:</span>
-            <div class="social-row">
-              <button type="button" aria-label="微信登录" @click="notReady('微信登录')">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3.5c-3.6 0-6.5 2.3-6.5 5.2 0 1.7.9 3.1 2.3 4.1L4.3 15l2.2-1.1c.7.2 1.6.3 2.4.3"/><path d="M15 8.6c3 0 5.5 1.9 5.5 4.3 0 1.4-.7 2.6-1.9 3.4l.5 1.5-1.8-.9c-.7.2-1.5.3-2.3.3-3 0-5.5-1.9-5.5-4.3S12 8.6 15 8.6Z"/></svg>
-              </button>
-              <button type="button" aria-label="QQ 登录" @click="notReady('QQ 登录')">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.4" r="3.9"/><path d="M8.7 11.9c-1.2 1.5-1.9 3.3-1.1 4.2.6.7 1.9.4 2.8-.3m5.3-3.9c1.2 1.5 1.9 3.3 1.1 4.2-.6.7-1.9.4-2.8-.3"/></svg>
-              </button>
-              <button type="button" aria-label="手机一键登录" @click="notReady('手机一键登录')">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2.6" width="10" height="18.8" rx="2.6"/><path d="M11 18.4h2"/></svg>
-              </button>
-            </div>
-          </div>
         </div>
-
-        <p class="demo-tip">演示账号：admin / 123456</p>
       </div>
 
       <footer class="panel-foot">
@@ -398,12 +366,6 @@ function notReady (what) {
 .panel::-webkit-scrollbar-thumb { background: rgba(200, 122, 62, .2); border-radius: 4px; }
 
 .panel-brand { margin-bottom: 16px; padding-top: 8px; }
-.brand-pill {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 4px 12px; margin-bottom: 12px; border-radius: 999px;
-  background: rgba(200, 122, 62, .1); border: 1px solid rgba(200, 122, 62, .2);
-  color: var(--w-accent); font-size: 12px; font-weight: 700;
-}
 .panel-brand h1 { margin: 0; font-size: 24px; font-weight: 900; letter-spacing: -.02em; color: var(--w-dark); }
 .brand-sub { margin: 4px 0 0; font-size: 12px; color: var(--w-muted); }
 
@@ -446,12 +408,6 @@ function notReady (what) {
 }
 .fld-eye:hover { color: var(--w-dark); }
 
-.row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 4px; font-size: 12px; color: var(--w-muted); }
-.checkbox { display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; color: var(--w-dark); }
-.checkbox input { width: 16px; height: 16px; accent-color: var(--w-accent); cursor: pointer; }
-.link { border: none; background: none; padding: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; color: var(--w-accent); }
-.link:hover { text-decoration: underline; }
-
 .err {
   display: flex; align-items: center; gap: 6px; margin: 0;
   padding: 9px 12px; border-radius: 12px;
@@ -471,22 +427,6 @@ function notReady (what) {
 .submit--dark:hover:not(:disabled) { background: var(--w-dark-hover); }
 .submit--accent { background: var(--w-accent); box-shadow: 0 10px 18px -6px rgba(200, 122, 62, .5); }
 .submit--accent:hover:not(:disabled) { background: var(--w-accent-hover); }
-
-.social {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--w-line);
-  font-size: 12px; color: var(--w-muted);
-}
-.social-row { display: flex; align-items: center; gap: 10px; }
-.social-row button {
-  width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
-  display: grid; place-items: center;
-  background: var(--w-bg); border: 1px solid var(--w-line); color: var(--w-dark);
-  transition: background .2s, color .2s, border-color .2s;
-}
-.social-row button:hover { background: #fff; border-color: var(--w-accent); color: var(--w-accent); }
-
-.demo-tip { margin: 14px 0 0; text-align: center; font-size: 11.5px; color: var(--w-muted); }
 
 .panel-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
