@@ -6,7 +6,7 @@ import com.mkp.common.result.R;
 import com.mkp.pet.service.ReviewService;
 import org.springframework.web.bind.annotation.*;
 
-import javax.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 
 @RestController

@@ -15,15 +15,16 @@ spring:
       discovery:
         server-addr: 127.0.0.1:8848
         ip: 127.0.0.1
-  redis:
-    host: 127.0.0.1
-    port: 6379
-    lettuce:
-      pool:
-        max-active: 8
-        max-idle: 8
-        min-idle: 0
-        max-wait: -1ms
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
   servlet:
     multipart:
       max-file-size: 5MB

@@ -36,7 +36,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         }
 
         // Allow GET post detail (public viewing)
-        if ("GET".equalsIgnoreCase(exchange.getRequest().getMethodValue())
+        if ("GET".equalsIgnoreCase(String.valueOf(exchange.getRequest().getMethod()))
                 && path.matches("/api/post/\\d+$")) {
             return chain.filter(exchange);
         }

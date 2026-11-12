@@ -96,7 +96,7 @@ class AuthServiceImplTest {
         R<Void> result = authService.register("newuser", "123456", "Nick");
 
         assertEquals(200, result.getCode());
-        verify(userMapper).insert(argThat(user ->
+        verify(userMapper).insert(argThat((User user) ->
                 "newuser".equals(user.getUsername()) &&
                 "Nick".equals(user.getNickname()) &&
                 RoleConstants.USER.equals(user.getRole()) &&
@@ -111,7 +111,7 @@ class AuthServiceImplTest {
         R<Void> result = authService.register("existinguser", "123456", "Nick");
 
         assertEquals(500, result.getCode());
-        verify(userMapper, never()).insert(any());
+        verify(userMapper, never()).insert(any(User.class));
     }
 
     @Test
@@ -121,7 +121,7 @@ class AuthServiceImplTest {
 
         authService.register("newuser", "123456", null);
 
-        verify(userMapper).insert(argThat(user ->
+        verify(userMapper).insert(argThat((User user) ->
                 "newuser".equals(user.getNickname())
         ));
     }

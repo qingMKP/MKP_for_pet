@@ -5,7 +5,7 @@ import com.mkp.common.result.R;
 import com.mkp.post.service.CommentService;
 import org.springframework.web.bind.annotation.*;
 
-import javax.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 public class CommentController {

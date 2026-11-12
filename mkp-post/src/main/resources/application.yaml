@@ -15,15 +15,16 @@ spring:
       discovery:
         server-addr: 127.0.0.1:8848
         ip: 127.0.0.1
-  redis:
-    host: 127.0.0.1
-    port: 6379
-    lettuce:
-      pool:
-        max-active: 8
-        max-idle: 8
-        min-idle: 0
-        max-wait: -1ms
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
   elasticsearch:
     # 本机 Docker 里的 mkp-es（7.17.22）；可用环境变量 ES_URI 覆盖
     uris: ${ES_URI:http://127.0.0.1:9200}
