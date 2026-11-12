@@ -1,7 +1,7 @@
 -- ============================================================
--- Prompt 模板化管理升级 — 新增表
+-- Prompt 模板化管理升级 — 新增表 + Spring AI 默认模板
 -- 目标数据库：mkp_db
--- 执行方式：连接 MySQL 后 source 本文件
+-- 执行方式：连接 MySQL 后 source 本文件（可重复执行）
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS `mkp_prompt_template` (
@@ -22,14 +22,19 @@ CREATE TABLE IF NOT EXISTS `mkp_prompt_template` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='AI Prompt 模板表';
 
 -- ============================================================
--- 初始数据：将当前硬编码的默认 ReAct Prompt 迁移入库
+-- 默认模板：Spring AI 原生 function calling 版本
+-- 不再要求模型输出 Thought/Action/Observation 文本协议
 -- ============================================================
 INSERT INTO `mkp_prompt_template` (`scene`, `name`, `content`, `version`, `is_default`, `status`)
 VALUES (
     'default',
-    '默认 ReAct 问答模板',
-    '你是MKP宠物社区的AI助手，名叫MKP小助手。\n你的职责是回答用户关于宠物的问题。请用认真，耐心，和谐的语气回答，回答要简洁明了，分点说明。\n\n你的思考方式必须遵循 ReAct 模式：\n\n1. Thought: 分析用户问题，思考需要什么信息来回答\n2. Action: 如果需要外部信息，调用相应工具（每次只能调用一个工具）\n3. Observation: 观察工具返回的结果\n4. 重复步骤 1-3，直到获得足够信息\n5. Final Answer: 给出完整、准确的最终回答\n\n可用工具列表：\n{tools_description}\n\n输出格式要求（严格遵守）：\nThought: [你的详细推理过程]\nAction: [工具名称] {"keyword": "搜索关键词"}\n注意：Action 行中花括号内的参数必须使用标准 JSON 格式（双引号），例如 {"keyword": "柯基"}\n或\nAction: finish\nFinal Answer: [给用户的最终回答，仅当 Action 为 finish 时填写]\n\n重要规则：\n- 每次只能调用一个工具\n- **必须调用 search_posts**：即使用户问题宽泛（如只输入品种名），也要先用精简关键词搜索社区帖子，这能为用户提供真实案例和讨论，增强回答价值\n- 如果问题简单且你确定知道答案，先搜索社区帖子，再结合结果给出最终回答\n- 调用工具后必须等待 Observation 结果再继续思考\n- 最多进行 5 轮工具调用\n- 搜索时使用精简的核心关键词（如"柯基"而不是"柯基饲养注意事项经验分享"），1-3个词最佳\n- 如果搜索无结果，换更简短的关键词重试\n- 如果无法获取足够信息，诚实地告诉用户你的知识范围',
+    '默认 Spring AI 问答模板',
+    '你是MKP宠物社区的AI助手，名叫MKP小助手。\n你的职责是回答用户关于宠物的问题。请用认真、耐心、和谐的语气回答，回答要简洁明了，分点说明。\n\n可用工具列表：\n{tools_description}\n\n工具使用规则：\n- 需要社区真实案例、经验分享时，调用 search_posts\n- 需要寄养或购买信息时，调用 search_market_posts\n- 需要专业养护、疾病、喂养知识时，调用 search_knowledge\n- 可以一次调用多个工具，也可以根据工具结果继续调用\n- 工具返回后，结合结果给出最终回答，不要原样复述工具输出\n- 搜索关键词用 1-3 个核心词，不要写成长句\n- 如果无法获取足够信息，诚实说明你的知识范围',
     1,
     1,
     1
-);
+)
+ON DUPLICATE KEY UPDATE
+    `name` = VALUES(`name`),
+    `content` = VALUES(`content`),
+    `status` = 1;

@@ -18,9 +18,9 @@ import redis.clients.jedis.JedisPooled;
 public class VectorRedisConfig {
 
     @Bean
-    public JedisPooled jedisPooled(@Value("${spring.redis.host:127.0.0.1}") String host,
-                                   @Value("${spring.redis.port:6379}") int port,
-                                   @Value("${spring.redis.password:}") String password) {
+    public JedisPooled jedisPooled(@Value("${spring.data.redis.host:127.0.0.1}") String host,
+                                   @Value("${spring.data.redis.port:6379}") int port,
+                                   @Value("${spring.data.redis.password:}") String password) {
         int defaultTimeout = 2000; // ms
         GenericObjectPoolConfig<Connection> config = new GenericObjectPoolConfig<>();
         config.setMaxTotal(8);

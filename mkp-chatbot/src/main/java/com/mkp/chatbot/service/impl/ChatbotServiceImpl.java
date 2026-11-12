@@ -10,8 +10,17 @@ import com.mkp.chatbot.mapper.ChatbotMessageMapper;
 import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.ChatbotService;
 import com.mkp.chatbot.service.prompt.PromptTemplateService;
-import com.mkp.chatbot.service.react.*;
+import com.mkp.chatbot.service.react.ReActContext;
+import com.mkp.chatbot.service.react.ToolRegistry;
+import com.mkp.chatbot.service.tool.ChatbotTools;
+import com.mkp.chatbot.service.tool.ObservableToolCallback;
 import com.mkp.chatbot.service.vector.KnowledgeVectorSyncService;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import com.mkp.common.dto.ChatbotReplyVO;
 import com.mkp.common.dto.KnowledgeSaveDTO;
 import com.mkp.common.entity.ChatbotConversation;
@@ -28,10 +37,13 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 @Service
@@ -49,7 +61,10 @@ public class ChatbotServiceImpl implements ChatbotService {
     private StringRedisTemplate stringRedisTemplate;
 
     @Autowired
-    private ReActEngine reactEngine;
+    private ChatClient chatClient;
+
+    @Autowired
+    private ChatbotTools chatbotTools;
 
     @Autowired
     private ToolRegistry toolRegistry;
@@ -100,27 +115,23 @@ public class ChatbotServiceImpl implements ChatbotService {
         // 第二步：从 Redis 读取历史消息（Redis 优先，MySQL 兜底）
         List<Map<String, String>> history = loadHistory(userId, conversationId);
 
-        // 第三步：构建 ReAct 消息列表
-        List<Message> messages = new ArrayList<>();
+        // 第三步：构建历史消息（Spring AI 原生 Message）
+        List<Message> messages = toSpringMessages(history);
 
-        // System Prompt（动态注入工具描述）
-        messages.add(new Message("system", buildSystemPrompt()));
-
-        // 历史对话
-        for (Map<String, String> h : history) {
-            messages.add(new Message(h.get("role"), h.get("content")));
-        }
-
-        // 当前问题
-        messages.add(new Message("user", question));
-
-        // 第四步：执行 ReAct 推理循环
+        // 第四步：Spring AI 调用，工具由模型原生 function calling 驱动
         ReActContext context = new ReActContext();
         String answer;
         try {
-            answer = reactEngine.execute(messages, question, context);
+            answer = chatClient.prompt()
+                    .system(buildSystemPrompt())
+                    .messages(messages)
+                    .user(question)
+                    .tools(chatbotTools)
+                    .toolContext(Map.of("mkpContext", context))
+                    .call()
+                    .content();
         } catch (Exception e) {
-            log.error("ReAct 推理失败，降级处理", e);
+            log.error("Spring AI 调用失败，降级处理", e);
             answer = "抱歉，我暂时无法回答您的问题，请稍后再试。";
         }
 
@@ -187,17 +198,69 @@ public class ChatbotServiceImpl implements ChatbotService {
             // 第二步：从 Redis 读取历史消息（复用）
             List<Map<String, String>> history = loadHistory(userId, conversationId);
 
-            // 第三步：构建 ReAct 消息列表（复用）
-            List<Message> messages = new ArrayList<>();
-            messages.add(new Message("system", buildSystemPrompt()));
-            for (Map<String, String> h : history) {
-                messages.add(new Message(h.get("role"), h.get("content")));
-            }
-            messages.add(new Message("user", question));
+            // 第三步：构建历史消息（Spring AI 原生 Message）
+            List<Message> messages = toSpringMessages(history);
 
-            // 第四步：执行 ReAct 流式推理
+            // 第四步：Spring AI 流式调用，工具由模型原生 function calling 驱动
             ReActContext context = new ReActContext();
-            String answer = reactEngine.executeStreaming(messages, question, context, emitter);
+            StringBuilder answerBuffer = new StringBuilder();
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+            List<ToolCallback> toolCallbacks = Arrays.stream(ToolCallbacks.from(chatbotTools))
+                    .<ToolCallback>map(callback -> new ObservableToolCallback(callback, (phase, payload) -> {
+                        if ("action".equals(phase)) {
+                            sendEvent(emitter, "tool", Map.of(
+                                    "step", "action",
+                                    "name", callback.getToolDefinition().name(),
+                                    "args", payload));
+                        } else {
+                            sendEvent(emitter, "tool", Map.of(
+                                    "step", "observation",
+                                    "content", payload));
+                        }
+                    }))
+                    .toList();
+
+            chatClient.prompt()
+                    .system(buildSystemPrompt())
+                    .messages(messages)
+                    .user(question)
+                    .toolCallbacks(toolCallbacks)
+                    .toolContext(Map.of("mkpContext", context))
+                    .stream()
+                    .chatResponse()
+                    .subscribe(response -> {
+                        if (response == null || response.getResult() == null) {
+                            return;
+                        }
+                        AssistantMessage output = response.getResult().getOutput();
+                        String text = output.getText();
+                        if (text != null && !text.isEmpty()) {
+                            answerBuffer.append(text);
+                            sendEvent(emitter, "token", Map.of("step", "answer", "content", text));
+                        }
+                    }, error -> {
+                        errorRef.set(error);
+                        latch.countDown();
+                    }, latch::countDown);
+
+            try {
+                if (!latch.await(120, TimeUnit.SECONDS)) {
+                    log.warn("Spring AI 流式调用超时");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            if (errorRef.get() != null) {
+                log.error("Spring AI 流式调用失败", errorRef.get());
+                sendEvent(emitter, "error", Map.of("message", "AI 服务调用失败"));
+                emitter.complete();
+                return;
+            }
+
+            String answer = answerBuffer.toString();
 
             // 第五步：将本轮问答写入历史（复用）
             if (answer == null || answer.isBlank()) {
@@ -285,7 +348,7 @@ public class ChatbotServiceImpl implements ChatbotService {
     private String buildFallbackTemplate() {
         return "你是MKP宠物社区的AI助手。\n\n" +
                "可用工具列表：\n{tools_description}\n\n" +
-               "请根据用户问题，思考是否需要调用工具获取信息，然后给出回答。";
+               "根据用户问题判断是否需要调用工具；需要时直接调用，拿到结果后再给出最终回答。";
     }
 
     /**
@@ -294,6 +357,36 @@ public class ChatbotServiceImpl implements ChatbotService {
     @Override
     public List<String> getAvailableTools() {
         return toolRegistry.getAvailableToolNames();
+    }
+
+    /**
+     * 把 Redis 里的历史记录转换为 Spring AI 的 Message。
+     */
+    private List<Message> toSpringMessages(List<Map<String, String>> history) {
+        List<Message> messages = new ArrayList<>(history.size());
+        for (Map<String, String> item : history) {
+            String content = item.get("content");
+            if (content == null || content.isEmpty()) {
+                continue;
+            }
+            if ("assistant".equalsIgnoreCase(item.get("role"))) {
+                messages.add(new AssistantMessage(content));
+            } else {
+                messages.add(new UserMessage(content));
+            }
+        }
+        return messages;
+    }
+
+    /**
+     * SSE 发送封装：客户端断开时只记录日志，不打断主流程。
+     */
+    private void sendEvent(SseEmitter emitter, String eventName, Object data) {
+        try {
+            emitter.send(SseEmitter.event().name(eventName).data(data));
+        } catch (Exception e) {
+            log.debug("SSE 事件发送失败: {}", eventName);
+        }
     }
 
     // ==================== 会话管理 ====================

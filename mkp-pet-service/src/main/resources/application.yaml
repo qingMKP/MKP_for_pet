@@ -4,16 +4,28 @@ server:
 spring:
   application:
     name: mkp-pet-service
+  ai:
+    model:
+      chat: dashscope              # 切换 DeepSeek：改成 deepseek 并配置 DEEPSEEK_API_KEY
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.5
+          max-tokens: 2000
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.5
+          max-tokens: 2000
   cloud:
     nacos:
       discovery:
         server-addr: 127.0.0.1:8848
         ip: 127.0.0.1
-
-deepseek:
-  api-key: ${DEEPSEEK_API_KEY}
-  api-url: https://api.deepseek.com/v1/chat/completions
-  model: deepseek-chat
 
 springdoc:
   api-docs:
