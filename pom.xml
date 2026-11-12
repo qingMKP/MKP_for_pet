@@ -23,24 +23,50 @@
     </modules>
 
     <properties>
-        <java.version>17</java.version>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-boot.version>2.7.18</spring-boot.version>
-        <spring-cloud.version>2021.0.9</spring-cloud.version>
-        <spring-cloud-alibaba.version>2021.0.6.1</spring-cloud-alibaba.version>
-        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <spring-boot.version>3.5.16</spring-boot.version>
+        <spring-cloud.version>2025.0.3</spring-cloud.version>
+        <spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
+        <spring-ai.version>1.1.2</spring-ai.version>
+        <spring-ai-alibaba.version>1.1.2.0</spring-ai-alibaba.version>
+        <spring-ai-alibaba-extensions.version>1.1.2.1</spring-ai-alibaba-extensions.version>
+        <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <mysql.version>8.0.33</mysql.version>
-        <druid.version>1.2.23</druid.version>
+        <druid.version>1.2.28</druid.version>
         <hutool.version>5.8.29</hutool.version>
         <jjwt.version>0.12.5</jjwt.version>
-        <nacos-client.version>2.3.0</nacos-client.version>
-        <springdoc.version>1.7.0</springdoc.version>
+        <springdoc.version>2.8.17</springdoc.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Spring AI BOM -->
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Spring AI Alibaba BOM（Agent / Graph） -->
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-bom</artifactId>
+                <version>${spring-ai-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Spring AI Alibaba Extensions BOM（DashScope / RAG / Memory） -->
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-extensions-bom</artifactId>
+                <version>${spring-ai-alibaba-extensions.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <!-- Spring Boot -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
@@ -68,7 +94,12 @@
             <!-- MyBatis-Plus -->
             <dependency>
                 <groupId>com.baomidou</groupId>
-                <artifactId>mybatis-plus-boot-starter</artifactId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-jsqlparser</artifactId>
                 <version>${mybatis-plus.version}</version>
             </dependency>
             <!-- MySQL -->
@@ -80,7 +111,7 @@
             <!-- Druid -->
             <dependency>
                 <groupId>com.alibaba</groupId>
-                <artifactId>druid-spring-boot-starter</artifactId>
+                <artifactId>druid-spring-boot-3-starter</artifactId>
                 <version>${druid.version}</version>
             </dependency>
             <!-- Hutool -->
@@ -107,16 +138,10 @@
                 <version>${jjwt.version}</version>
                 <scope>runtime</scope>
             </dependency>
-            <!-- Nacos Client (override BOM version) -->
-            <dependency>
-                <groupId>com.alibaba.nacos</groupId>
-                <artifactId>nacos-client</artifactId>
-                <version>${nacos-client.version}</version>
-            </dependency>
             <!-- SpringDoc OpenAPI -->
             <dependency>
                 <groupId>org.springdoc</groupId>
-                <artifactId>springdoc-openapi-ui</artifactId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
                 <version>${springdoc.version}</version>
             </dependency>
             <!-- Internal modules -->
@@ -143,6 +168,14 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.1</version>
+                <configuration>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

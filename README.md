@@ -2,10 +2,10 @@
 
 一个基于 **Spring Cloud 微服务 + Vue 3** 的宠物社区平台，覆盖内容社区、托管交易与 AI 助手三大板块。
 
-- **后端**：8 个可独立部署的微服务 + 2 个公共模块，JDK 17 / Spring Boot 2.7 / Spring Cloud 2021 / Nacos
+- **后端**：8 个可独立部署的微服务 + 2 个公共模块，JDK 17 / Spring Boot 3.5 / Spring Cloud 2025 / Spring Cloud Alibaba 2025 / Nacos
 - **前端**：Vue 3 + Vite + Element Plus + ECharts，共 21 个页面（含 6 个后台管理页）
 - **中间件**：MySQL 8 / Redis Stack / Elasticsearch 7.17 + IK / 阿里云 OSS
-- **AI**：DeepSeek（对话 + ReAct 推理）、DashScope text-embedding-v3（1024 维向量）+ Redis Stack RediSearch 向量检索
+- **AI**：Spring AI 1.1 + Spring AI Alibaba 1.1（DashScope / Qwen）、ChatClient + 原生工具调用、DashScope text-embedding-v3（1024 维）+ Redis Stack RediSearch 向量检索
 
 ## 功能概览
 
@@ -16,7 +16,7 @@
 | 好友与私信 | 好友关系、会话消息、未读通知 |
 | 托管交易 | 发布（寄养 / 出售）、申请与接受、订单状态机、钱包（可用 + 冻结）、支付 / 退款流水、评价、交易广场 SSE 实时刷新 |
 | 宠物服务 | 按物种 / 品种 / 月龄 / 体重生成 AI 养护建议 |
-| AI 助手 | ReAct 多轮推理 + 工具调用（知识库 / 社区 / 集市）、SSE 流式输出、RAG 语义检索、Prompt 模板管理 |
+| AI 助手 | Spring AI Alibaba（Qwen + DashScope Embedding）、原生工具调用（知识库 / 社区 / 集市）、SSE 流式输出、RAG 语义检索、Prompt 模板管理 |
 | 后台管理 | 仪表盘、用户、帖子、评论、知识库、Prompt 模板 |
 
 ## 系统架构
@@ -35,7 +35,7 @@ flowchart TB
         USER[mkp-user :8082]
         POST["mkp-post :8083<br/>帖子 / ES 检索"]
         CHAT[mkp-chat :8084]
-        BOT["mkp-chatbot :8085<br/>ReAct / RAG"]
+        BOT["mkp-chatbot :8085<br/>Spring AI / RAG"]
         PET["mkp-pet :8086<br/>交易 / 钱包"]
         PSVC[mkp-pet-service :8087]
     end
@@ -72,9 +72,9 @@ flowchart TB
 | `mkp-user` | 8082 | 用户资料、好友关系、管理员用户管理 | — |
 | `mkp-post` | 8083 | 帖子 / 评论 / 点赞 / 浏览量、ES 全文检索、OSS 上传 | 浏览量 Redis 计数 + 定时刷库；ES 索引事务后异步同步 |
 | `mkp-chat` | 8084 | 会话消息、未读通知 | 跨服务用户信息 Redis 缓存 |
-| `mkp-chatbot` | 8085 | AI 助手：ReAct 引擎、工具注册中心、RAG、Prompt 模板 | Redis Stack 向量检索 + 多级降级 |
+| `mkp-chatbot` | 8085 | AI 助手：Spring AI ChatClient、`@Tool` 工具、RAG、Prompt 模板 | Qwen 对话 + DashScope 向量化；Redis Stack 向量检索 + 多级降级 |
 | `mkp-pet` | 8086 | 发布单 / 申请 / 托管订单 / 钱包资金 / 评价 / 交易广场 SSE | 7 态订单状态机 + CAS 条件更新 |
-| `mkp-pet-service` | 8087 | 宠物养护 AI 建议 | DeepSeek |
+| `mkp-pet-service` | 8087 | 宠物养护 AI 建议 | Spring AI ChatClient + Qwen（可切 DeepSeek） |
 
 ## 快速开始
 
@@ -152,9 +152,9 @@ cp .env.example .env
 
 订单状态流转全部使用带条件的 `UPDATE`（`WHERE status = 期望值`）并判断影响行数，未命中即认为并发冲突；钱包是"可用 + 冻结"双账户，扣款同样是条件更新（`WHERE balance >= amount`），影响行数为 0 时抛业务异常。资金动作与状态变更在同一事务内，异常会让两者一起回滚，不会出现"订单已托管但没扣钱"。
 
-### AI 助手：ReAct + 工具注册中心 + SSE + RAG 降级
+### AI 助手：Spring AI + 原生工具调用 + SSE + RAG 降级
 
-`Thought → Action → Observation` 多轮循环（上限 5 轮，超出给兜底回答），工具由 Spring 自动收集注册，System Prompt 运行时注入工具描述，新增工具无需改动主流程；SSE 用 `think` / `tool` / `obs` / `token` / `done` 事件把整条推理链路推给前端，断连立即停止。知识库检索走 DashScope Embedding + Redis Stack HNSW 向量索引（`FT.SEARCH KNN` 余弦相似度 + 阈值过滤），Redis 不支持 RediSearch 时自动降级为关键词匹配。
+模型层用 Spring AI Alibaba 的 DashScope Starter 自动装配 Qwen 对话与 text-embedding-v3；切换 DeepSeek 只改 `spring.ai.model.chat`。对话链路统一走 Spring AI `ChatClient`：工具用 `@Tool` 声明，由模型原生 function calling 调度，不再手写 ReAct 文本协议、正则解析和最多 5 轮的循环控制；SSE 用 `tool` / `token` / `done` 事件推送工具调用与回答片段。向量化走 Spring AI `EmbeddingModel`（DashScope text-embedding-v3，1024 维），检索仍是 Redis Stack HNSW 向量索引（`FT.SEARCH KNN` 余弦相似度 + 阈值过滤），Redis 不支持 RediSearch 时自动降级为关键词匹配。
 
 ## 目录结构
 
@@ -167,7 +167,7 @@ MKP/
 ├── mkp-user/            用户与好友
 ├── mkp-post/            社区帖子、ES 检索、OSS 上传
 ├── mkp-chat/            私信会话
-├── mkp-chatbot/         AI 助手（ReAct / RAG / Prompt 模板）
+├── mkp-chatbot/         AI 助手（Spring AI / RAG / Prompt 模板）
 ├── mkp-pet/             集市交易、钱包资金、评价
 ├── mkp-pet-service/     宠物养护 AI 建议
 ├── frontend/            Vue 3 前端（含后台管理）
