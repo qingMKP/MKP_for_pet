@@ -11,6 +11,7 @@ import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.ChatbotService;
 import com.mkp.chatbot.service.prompt.PromptTemplateService;
 import com.mkp.chatbot.service.react.ReActContext;
+import com.mkp.chatbot.service.router.IntentRouter;
 import com.mkp.chatbot.service.react.ToolRegistry;
 import com.mkp.chatbot.service.tool.ChatbotTools;
 import com.mkp.chatbot.service.tool.ObservableToolCallback;
@@ -41,6 +42,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,6 +67,9 @@ public class ChatbotServiceImpl implements ChatbotService {
 
     @Autowired
     private ChatbotTools chatbotTools;
+
+    @Autowired
+    private IntentRouter intentRouter;
 
     @Autowired
     private ToolRegistry toolRegistry;
@@ -118,15 +123,20 @@ public class ChatbotServiceImpl implements ChatbotService {
         // 第三步：构建历史消息（Spring AI 原生 Message）
         List<Message> messages = toSpringMessages(history);
 
-        // 第四步：Spring AI 调用，工具由模型原生 function calling 驱动
+        // 第四步：意图路由 + Spring AI 调用，工具由模型原生 function calling 驱动
+        // 路由器只裁剪本次挂载的工具集合；分类失败或超时统一降级 MIXED（等价于改造前的全量挂载）
+        IntentRouter.RoutingResult routing = intentRouter.route(question);
+        log.info("意图路由：intent={} source={} cost={}ms question={}",
+                routing.intent(), routing.source(), routing.costMs(), question);
+
         ReActContext context = new ReActContext();
         String answer;
         try {
             answer = chatClient.prompt()
-                    .system(buildSystemPrompt())
+                    .system(buildSystemPrompt(routing.intent().toolNames()))
                     .messages(messages)
                     .user(question)
-                    .tools(chatbotTools)
+                    .toolCallbacks(filterToolCallbacks(routing.intent()))
                     .toolContext(Map.of("mkpContext", context))
                     .call()
                     .content();
@@ -207,23 +217,30 @@ public class ChatbotServiceImpl implements ChatbotService {
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<Throwable> errorRef = new AtomicReference<>();
 
-            List<ToolCallback> toolCallbacks = Arrays.stream(ToolCallbacks.from(chatbotTools))
-                    .<ToolCallback>map(callback -> new ObservableToolCallback(callback, (phase, payload) -> {
-                        if ("action".equals(phase)) {
-                            sendEvent(emitter, "tool", Map.of(
-                                    "step", "action",
-                                    "name", callback.getToolDefinition().name(),
-                                    "args", payload));
-                        } else {
-                            sendEvent(emitter, "tool", Map.of(
-                                    "step", "observation",
-                                    "content", payload));
-                        }
-                    }))
-                    .toList();
+            // 先分类，再按意图挂载工具：只影响工具集合，SSE 事件名与结构保持不变
+            IntentRouter.RoutingResult routing = intentRouter.route(question);
+            log.info("意图路由：intent={} source={} cost={}ms question={}",
+                    routing.intent(), routing.source(), routing.costMs(), question);
+            sendEvent(emitter, "think", Map.of("content", "正在分析问题…"));
+
+            List<ToolCallback> toolCallbacks = new ArrayList<>();
+            for (ToolCallback callback : filterToolCallbacks(routing.intent())) {
+                toolCallbacks.add(new ObservableToolCallback(callback, (phase, payload) -> {
+                    if ("action".equals(phase)) {
+                        sendEvent(emitter, "tool", Map.of(
+                                "step", "action",
+                                "name", callback.getToolDefinition().name(),
+                                "args", payload));
+                    } else {
+                        sendEvent(emitter, "tool", Map.of(
+                                "step", "observation",
+                                "content", payload));
+                    }
+                }));
+            }
 
             chatClient.prompt()
-                    .system(buildSystemPrompt())
+                    .system(buildSystemPrompt(routing.intent().toolNames()))
                     .messages(messages)
                     .user(question)
                     .toolCallbacks(toolCallbacks)
@@ -301,7 +318,7 @@ public class ChatbotServiceImpl implements ChatbotService {
      * 2. 工具描述拼接逻辑独立为方法，职责更清晰
      * 3. 支持通过配置切换场景
      */
-    private String buildSystemPrompt() {
+    private String buildSystemPrompt(Set<String> toolNames) {
         // 1. 加载模板内容（带缓存）
         String template = promptTemplateService.getTemplateContent(defaultPromptScene);
 
@@ -311,20 +328,23 @@ public class ChatbotServiceImpl implements ChatbotService {
             template = buildFallbackTemplate();
         }
 
-        // 2. 动态注入工具描述
-        String toolsDesc = buildToolsDescription();
+        // 2. 动态注入工具描述（只描述本轮真正挂载的工具，避免模型去调不存在的工具）
+        String toolsDesc = buildToolsDescription(toolNames);
 
         // 3. 替换占位符
         return template.replace("{tools_description}", toolsDesc);
     }
 
     /**
-     * 构建工具描述字符串（从 ToolRegistry 动态获取）
+     * 构建工具描述字符串（从 ToolRegistry 动态获取，按意图裁剪）
      */
-    private String buildToolsDescription() {
+    private String buildToolsDescription(Set<String> toolNames) {
         StringBuilder toolsDesc = new StringBuilder();
 
         toolRegistry.getAllTools().forEach(tool -> {
+            if (toolNames != null && !toolNames.isEmpty() && !toolNames.contains(tool.getName())) {
+                return;
+            }
             toolsDesc.append("- ").append(tool.getName())
                      .append(": ").append(tool.getDescription())
                      .append("\n");
@@ -340,6 +360,20 @@ public class ChatbotServiceImpl implements ChatbotService {
         });
 
         return toolsDesc.toString();
+    }
+
+    /**
+     * 把 @Tool 方法转成 ToolCallback，并按路由结果裁剪。
+     * CHITCHAT 这类不挂工具的意图返回空列表（不能用 null，Spring AI 内部会直接遍历）。
+     */
+    private List<ToolCallback> filterToolCallbacks(IntentRouter.Intent intent) {
+        Set<String> names = intent == null ? null : intent.toolNames();
+        if (names == null || names.isEmpty()) {
+            return List.of();
+        }
+        return Arrays.stream(ToolCallbacks.from(chatbotTools))
+                .filter(callback -> names.contains(callback.getToolDefinition().name()))
+                .toList();
     }
 
     /**
