@@ -11,6 +11,8 @@ import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.ChatbotService;
 import com.mkp.chatbot.service.prompt.PromptTemplateService;
 import com.mkp.chatbot.service.planner.LightweightPlanner;
+import com.mkp.chatbot.service.planner.Scratchpad;
+import com.mkp.chatbot.service.planner.StepResult;
 import com.mkp.chatbot.service.react.ReActContext;
 import com.mkp.chatbot.service.router.IntentRouter;
 import com.mkp.chatbot.service.react.ToolRegistry;
@@ -56,6 +58,19 @@ public class ChatbotServiceImpl implements ChatbotService {
     private static final String SESSION_KEY_PREFIX = "chatbot:session:";
     private static final long SESSION_TTL_MINUTES = 30;
     private static final int MAX_HISTORY_ROUNDS = 10;
+    /**
+     * 子任务执行器的系统提示。
+     *
+     * 要求它先调工具检索、再输出结构化 JSON：answer 给用户看，facts 给后续步骤用。
+     * 解析失败会退化成纯文本（见 StepResult.fromRaw），不会中断链路。
+     */
+    private static final String STEP_SYSTEM_PROMPT = """
+            你是多步任务中的一步执行器，只负责完成当前子任务，不要回答用户的其他问题，不要寒暄。
+            需要事实依据时，先用可用工具检索；拿到结果后再总结。
+            最终只输出一个 JSON 对象，不要输出 JSON 以外的任何内容，也不要加 markdown 代码块：
+            {"answer":"这一步的简短结论，2-3 句","facts":{"品种":"柯基","城市":"广州"}}
+            facts 只放后续步骤可能需要的关键事实，最多 5 条，键名用中文名词，值不超过 30 字；
+            没有可复用的事实时输出空对象 {}。""";
     private static final Pattern PRONOUN_PATTERN =
             Pattern.compile("(^|[\\s，,。；;、])(他|她|它|这个|那个|该)");
 
@@ -356,36 +371,52 @@ public class ChatbotServiceImpl implements ChatbotService {
     private String executePlan(LightweightPlanner.Plan plan, String question, List<Message> messages,
                                ReActContext context, SseEmitter emitter) {
         StringBuilder evidence = new StringBuilder();
+        // 结构化共享区：上游步骤产出的事实，供下游步骤检索时参考
+        Scratchpad scratchpad = new Scratchpad();
         int index = 1;
         for (LightweightPlanner.Step step : plan.steps()) {
             sendEvent(emitter, "think", Map.of("content",
                     "第" + index + "步：" + intentLabel(step.intent()) + " - " + stepText(step, question)));
-            String stepAnswer = runStep(step, question, context, emitter);
-            if (stepAnswer != null && !stepAnswer.isBlank()) {
+            String stateBlock = scratchpad.toPromptBlock();
+            if (!stateBlock.isBlank()) {
+                log.info("第{}步携带已知信息: {}", index, stateBlock.replace("\n", " "));
+            }
+            StepResult result = runStep(step, question, stateBlock, context, emitter);
+            if (result.answer() != null && !result.answer().isBlank()) {
                 evidence.append("【").append(intentLabel(step.intent())).append("】")
                         .append(stepText(step, question)).append("\n")
-                        .append(stepAnswer.trim()).append("\n\n");
+                        .append(result.answer().trim()).append("\n\n");
             }
+            if (result.facts() != null && !result.facts().isEmpty()) {
+                scratchpad.merge(result.facts());
+                log.info("第{}步结构化产出: {}", index, result.facts());
+            }
+            scratchpad.addTrace(intentLabel(step.intent()), result.answer());
             index++;
         }
-        return streamAnswer(question, messages, buildSynthesisPrompt(evidence.toString()), List.of(), context, emitter);
+        return streamAnswer(question, messages, buildSynthesisPrompt(evidence.toString(), scratchpad),
+                List.of(), context, emitter);
     }
 
     /**
      * 执行单个子任务：非流式调用，只挂该子任务对应的一类工具，工具事件照常推给前端。
      */
-    private String runStep(LightweightPlanner.Step step, String question, ReActContext context, SseEmitter emitter) {
+    private StepResult runStep(LightweightPlanner.Step step, String question, String stateBlock,
+                               ReActContext context, SseEmitter emitter) {
+        String task = stepText(step, question);
+        String userText = stateBlock.isBlank() ? "当前子任务：" + task : stateBlock + "\n当前子任务：" + task;
         try {
-            return chatClient.prompt()
-                    .system("你是多步任务中的一步执行器。只完成当前子任务，不要回答用户的其他问题，不要寒暄。")
-                    .user(stepText(step, question))
+            String raw = chatClient.prompt()
+                    .system(STEP_SYSTEM_PROMPT)
+                    .user(userText)
                     .toolCallbacks(observableCallbacks(step.intent(), emitter))
                     .toolContext(Map.of("mkpContext", context))
                     .call()
                     .content();
+            return StepResult.fromRaw(raw);
         } catch (Exception e) {
-            log.warn("子任务执行失败: intent={} step={} error={}", step.intent(), stepText(step, question), e.toString());
-            return "";
+            log.warn("子任务执行失败: intent={} step={} error={}", step.intent(), task, e.toString());
+            return StepResult.empty();
         }
     }
 
@@ -462,10 +493,12 @@ public class ChatbotServiceImpl implements ChatbotService {
     /**
      * 汇总阶段的 System Prompt：不挂工具，只要求基于检索结果作答。
      */
-    private String buildSynthesisPrompt(String evidence) {
+    private String buildSynthesisPrompt(String evidence, Scratchpad scratchpad) {
         String base = buildSystemPrompt(Set.of());
+        String facts = scratchpad == null ? "" : scratchpad.toPromptBlock();
         return base + "\n\n本轮已完成检索，结果如下（可能为空）：\n"
                 + (evidence.isBlank() ? "（无检索结果）" : evidence)
+                + (facts.isBlank() ? "" : "\n关键事实：\n" + facts)
                 + "\n请只依据以上检索结果和常识回答用户，本轮不需要调用任何工具；没有检索到的内容要如实说明。";
     }
 
