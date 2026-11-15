@@ -10,6 +10,7 @@ import com.mkp.chatbot.mapper.ChatbotMessageMapper;
 import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.ChatbotService;
 import com.mkp.chatbot.service.prompt.PromptTemplateService;
+import com.mkp.chatbot.service.planner.LightweightPlanner;
 import com.mkp.chatbot.service.react.ReActContext;
 import com.mkp.chatbot.service.router.IntentRouter;
 import com.mkp.chatbot.service.react.ToolRegistry;
@@ -46,6 +47,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -54,6 +56,8 @@ public class ChatbotServiceImpl implements ChatbotService {
     private static final String SESSION_KEY_PREFIX = "chatbot:session:";
     private static final long SESSION_TTL_MINUTES = 30;
     private static final int MAX_HISTORY_ROUNDS = 10;
+    private static final Pattern PRONOUN_PATTERN =
+            Pattern.compile("(^|[\\s，,。；;、])(他|她|它|这个|那个|该)");
 
     private final ChatbotKnowledgeMapper knowledgeMapper;
     private final ChatbotConversationMapper conversationMapper;
@@ -69,7 +73,7 @@ public class ChatbotServiceImpl implements ChatbotService {
     private ChatbotTools chatbotTools;
 
     @Autowired
-    private IntentRouter intentRouter;
+    private IntentRouter intentRouter;     @Autowired     private LightweightPlanner lightweightPlanner;
 
     @Autowired
     private ToolRegistry toolRegistry;
@@ -213,9 +217,6 @@ public class ChatbotServiceImpl implements ChatbotService {
 
             // 第四步：Spring AI 流式调用，工具由模型原生 function calling 驱动
             ReActContext context = new ReActContext();
-            StringBuilder answerBuffer = new StringBuilder();
-            CountDownLatch latch = new CountDownLatch(1);
-            AtomicReference<Throwable> errorRef = new AtomicReference<>();
 
             // 先分类，再按意图挂载工具：只影响工具集合，SSE 事件名与结构保持不变
             IntentRouter.RoutingResult routing = intentRouter.route(question);
@@ -223,61 +224,22 @@ public class ChatbotServiceImpl implements ChatbotService {
                     routing.intent(), routing.source(), routing.costMs(), question);
             sendEvent(emitter, "think", Map.of("content", "正在分析问题…"));
 
-            List<ToolCallback> toolCallbacks = new ArrayList<>();
-            for (ToolCallback callback : filterToolCallbacks(routing.intent())) {
-                toolCallbacks.add(new ObservableToolCallback(callback, (phase, payload) -> {
-                    if ("action".equals(phase)) {
-                        sendEvent(emitter, "tool", Map.of(
-                                "step", "action",
-                                "name", callback.getToolDefinition().name(),
-                                "args", payload));
-                    } else {
-                        sendEvent(emitter, "tool", Map.of(
-                                "step", "observation",
-                                "content", payload));
-                    }
-                }));
+            // 多意图才做全局规划：规划 → 分步执行 → 一次性流式汇总；规划不可用则回退单轮
+            String answer = null;
+            LightweightPlanner.Plan plan = buildPlan(routing, question, history, emitter);
+            if (plan != null) {
+                answer = executePlan(plan, question, messages, context, emitter);
             }
-
-            chatClient.prompt()
-                    .system(buildSystemPrompt(routing.intent().toolNames()))
-                    .messages(messages)
-                    .user(question)
-                    .toolCallbacks(toolCallbacks)
-                    .toolContext(Map.of("mkpContext", context))
-                    .stream()
-                    .chatResponse()
-                    .subscribe(response -> {
-                        if (response == null || response.getResult() == null) {
-                            return;
-                        }
-                        AssistantMessage output = response.getResult().getOutput();
-                        String text = output.getText();
-                        if (text != null && !text.isEmpty()) {
-                            answerBuffer.append(text);
-                            sendEvent(emitter, "token", Map.of("step", "answer", "content", text));
-                        }
-                    }, error -> {
-                        errorRef.set(error);
-                        latch.countDown();
-                    }, latch::countDown);
-
-            try {
-                if (!latch.await(120, TimeUnit.SECONDS)) {
-                    log.warn("Spring AI 流式调用超时");
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            if (answer == null) {
+                answer = streamAnswer(question, messages,
+                        buildSystemPrompt(routing.intent().toolNames()),
+                        observableCallbacks(routing.intent(), emitter),
+                        context, emitter);
             }
-
-            if (errorRef.get() != null) {
-                log.error("Spring AI 流式调用失败", errorRef.get());
-                sendEvent(emitter, "error", Map.of("message", "AI 服务调用失败"));
+            if (answer == null) {
                 emitter.complete();
                 return;
             }
-
-            String answer = answerBuffer.toString();
 
             // 第五步：将本轮问答写入历史（复用）
             if (answer == null || answer.isBlank()) {
@@ -342,7 +304,7 @@ public class ChatbotServiceImpl implements ChatbotService {
         StringBuilder toolsDesc = new StringBuilder();
 
         toolRegistry.getAllTools().forEach(tool -> {
-            if (toolNames != null && !toolNames.isEmpty() && !toolNames.contains(tool.getName())) {
+            if (toolNames != null && !toolNames.contains(tool.getName())) {
                 return;
             }
             toolsDesc.append("- ").append(tool.getName())
@@ -362,6 +324,177 @@ public class ChatbotServiceImpl implements ChatbotService {
         return toolsDesc.toString();
     }
 
+    /**
+     * 只有多意图才值得做全局规划；单意图、规划失败、拆不出 2 步都返回 null，走原来的单轮链路。
+     */
+    private LightweightPlanner.Plan buildPlan(IntentRouter.RoutingResult routing, String question,
+                                              List<Map<String, String>> history, SseEmitter emitter) {
+        if (routing.intent() != IntentRouter.Intent.MIXED || !lightweightPlanner.isEnabled()) {
+            return null;
+        }
+        LightweightPlanner.Plan plan = lightweightPlanner.plan(question, history);
+        log.info("任务规划：steps={} source={} cost={}ms question={}",
+                plan.steps().size(), plan.source(), plan.costMs(), question);
+        if (!plan.usable()) {
+            return null;
+        }
+        StringBuilder summary = new StringBuilder("已拆解为 ").append(plan.steps().size()).append(" 个步骤：");
+        for (int i = 0; i < plan.steps().size(); i++) {
+            LightweightPlanner.Step step = plan.steps().get(i);
+            if (i > 0) {
+                summary.append("；");
+            }
+            summary.append(intentLabel(step.intent())).append(" - ").append(stepText(step, question));
+        }
+        sendEvent(emitter, "think", Map.of("content", summary.toString()));
+        return plan;
+    }
+
+    /**
+     * 按计划逐个子任务执行（每个子任务只带一类工具），最后把各步结果一次性汇总。
+     */
+    private String executePlan(LightweightPlanner.Plan plan, String question, List<Message> messages,
+                               ReActContext context, SseEmitter emitter) {
+        StringBuilder evidence = new StringBuilder();
+        int index = 1;
+        for (LightweightPlanner.Step step : plan.steps()) {
+            sendEvent(emitter, "think", Map.of("content",
+                    "第" + index + "步：" + intentLabel(step.intent()) + " - " + stepText(step, question)));
+            String stepAnswer = runStep(step, question, context, emitter);
+            if (stepAnswer != null && !stepAnswer.isBlank()) {
+                evidence.append("【").append(intentLabel(step.intent())).append("】")
+                        .append(stepText(step, question)).append("\n")
+                        .append(stepAnswer.trim()).append("\n\n");
+            }
+            index++;
+        }
+        return streamAnswer(question, messages, buildSynthesisPrompt(evidence.toString()), List.of(), context, emitter);
+    }
+
+    /**
+     * 执行单个子任务：非流式调用，只挂该子任务对应的一类工具，工具事件照常推给前端。
+     */
+    private String runStep(LightweightPlanner.Step step, String question, ReActContext context, SseEmitter emitter) {
+        try {
+            return chatClient.prompt()
+                    .system("你是多步任务中的一步执行器。只完成当前子任务，不要回答用户的其他问题，不要寒暄。")
+                    .user(stepText(step, question))
+                    .toolCallbacks(observableCallbacks(step.intent(), emitter))
+                    .toolContext(Map.of("mkpContext", context))
+                    .call()
+                    .content();
+        } catch (Exception e) {
+            log.warn("子任务执行失败: intent={} step={} error={}", step.intent(), stepText(step, question), e.toString());
+            return "";
+        }
+    }
+
+    /**
+     * 流式执行一次问答，token 事件逐段推送。返回 null 表示已向客户端发过 error 事件。
+     */
+    private String streamAnswer(String question, List<Message> messages, String systemPrompt,
+                                List<ToolCallback> toolCallbacks, ReActContext context, SseEmitter emitter) {
+        StringBuilder answerBuffer = new StringBuilder();
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+        chatClient.prompt()
+                .system(systemPrompt)
+                .messages(messages)
+                .user(question)
+                .toolCallbacks(toolCallbacks)
+                .toolContext(Map.of("mkpContext", context))
+                .stream()
+                .chatResponse()
+                .subscribe(response -> {
+                    if (response == null || response.getResult() == null) {
+                        return;
+                    }
+                    AssistantMessage output = response.getResult().getOutput();
+                    String text = output.getText();
+                    if (text != null && !text.isEmpty()) {
+                        answerBuffer.append(text);
+                        sendEvent(emitter, "token", Map.of("step", "answer", "content", text));
+                    }
+                }, error -> {
+                    errorRef.set(error);
+                    latch.countDown();
+                }, latch::countDown);
+
+        try {
+            if (!latch.await(120, TimeUnit.SECONDS)) {
+                log.warn("Spring AI 流式调用超时");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        if (errorRef.get() != null) {
+            log.error("Spring AI 流式调用失败", errorRef.get());
+            sendEvent(emitter, "error", Map.of("message", "AI 服务调用失败"));
+            return null;
+        }
+        return answerBuffer.toString();
+    }
+
+    /**
+     * 按意图取工具并包上 SSE 观察器，工具执行前后各推一次 tool 事件。
+     */
+    private List<ToolCallback> observableCallbacks(IntentRouter.Intent intent, SseEmitter emitter) {
+        List<ToolCallback> callbacks = new ArrayList<>();
+        for (ToolCallback callback : filterToolCallbacks(intent)) {
+            callbacks.add(new ObservableToolCallback(callback, (phase, payload) -> {
+                if ("action".equals(phase)) {
+                    sendEvent(emitter, "tool", Map.of(
+                            "step", "action",
+                            "name", callback.getToolDefinition().name(),
+                            "args", payload));
+                } else {
+                    sendEvent(emitter, "tool", Map.of(
+                            "step", "observation",
+                            "content", payload));
+                }
+            }));
+        }
+        return callbacks;
+    }
+
+    /**
+     * 汇总阶段的 System Prompt：不挂工具，只要求基于检索结果作答。
+     */
+    private String buildSynthesisPrompt(String evidence) {
+        String base = buildSystemPrompt(Set.of());
+        return base + "\n\n本轮已完成检索，结果如下（可能为空）：\n"
+                + (evidence.isBlank() ? "（无检索结果）" : evidence)
+                + "\n请只依据以上检索结果和常识回答用户，本轮不需要调用任何工具；没有检索到的内容要如实说明。";
+    }
+
+    private String intentLabel(IntentRouter.Intent intent) {
+        return switch (intent) {
+            case KNOWLEDGE -> "知识库";
+            case COMMUNITY -> "社区帖子";
+            case MARKET -> "交易广场";
+            case MIXED -> "综合";
+            case CHITCHAT -> "闲聊";
+        };
+    }
+    /**
+     * 把子任务拼成可以直接检索的文本。
+     *
+     * 有 subject 时由 subject 兜住指代，query 里出现"它"也无所谓；
+     * 没有 subject 且 query 里还带代词，才是真的没法消解，退回原问题当检索输入。
+     */
+    private String stepText(LightweightPlanner.Step step, String question) {
+        String subject = step.subject() == null ? "" : step.subject().trim();
+        String query = step.query() == null ? "" : step.query().trim();
+        if (!subject.isEmpty()) {
+            return query.isEmpty() ? subject : subject + " " + query;
+        }
+        if (query.isEmpty() || PRONOUN_PATTERN.matcher(query).find()) {
+            return question;
+        }
+        return query;
+    }
     /**
      * 把 @Tool 方法转成 ToolCallback，并按路由结果裁剪。
      * CHITCHAT 这类不挂工具的意图返回空列表（不能用 null，Spring AI 内部会直接遍历）。

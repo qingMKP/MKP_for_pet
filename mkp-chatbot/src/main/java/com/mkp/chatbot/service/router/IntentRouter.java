@@ -131,6 +131,22 @@ public class IntentRouter {
                 .content();
     }
 
+    /**
+     * 把大模型输出的英文标签转成意图，供 Planner 复用同一套工具映射。
+     */
+    public static Intent fromLabel(String label) {
+        if (label == null || label.isBlank()) {
+            return Intent.MIXED;
+        }
+        return switch (label.trim().toLowerCase(Locale.ROOT)) {
+            case "knowledge", "知识" -> Intent.KNOWLEDGE;
+            case "community", "posts", "社区", "帖子" -> Intent.COMMUNITY;
+            case "market", "寄养", "交易", "购买" -> Intent.MARKET;
+            case "chitchat", "闲聊" -> Intent.CHITCHAT;
+            default -> Intent.MIXED;
+        };
+    }
+
     static Intent parse(String raw) {
         if (raw == null || raw.isBlank()) {
             return Intent.MIXED;
