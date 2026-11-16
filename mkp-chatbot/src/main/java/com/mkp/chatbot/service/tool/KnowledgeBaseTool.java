@@ -3,6 +3,7 @@ package com.mkp.chatbot.service.tool;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
+import com.mkp.chatbot.service.doc.ChunkRetrievalService;
 import com.mkp.chatbot.service.react.ReActContext;
 import com.mkp.chatbot.service.react.Tool;
 import com.mkp.chatbot.service.vector.EmbeddingService;
@@ -30,14 +31,12 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 知识库检索工具
+ * 知识库检索工具。
  *
- * 支持双模式检索：
- * 1. 向量语义检索（Redis Stack + DashScope Embedding）——默认启用，语义匹配
- * 2. 关键词包含匹配（向量不可用时自动降级）——兜底方案，字符串匹配
- *
- * 启动时检测 Redis 是否支持 RediSearch 模块，不支持则自动使用关键词匹配，
- * 保证任何环境下系统都能正常运行。
+ * 一次调用并行查两个库，结果拼成一段文字返回：
+ * 1. 长文档父子块：子块向量召回 → 按 parentId 回查父块整节（ChunkRetrievalService）
+ * 2. 短问答：knowledge 表整条向量召回（idx:knowledge:vector）
+ * 两条都没有命中时，降级到 keyword 字段的字面包含匹配。
  */
 @Slf4j
 @Component
@@ -45,13 +44,13 @@ public class KnowledgeBaseTool implements Tool {
 
     private static final String KNOWLEDGE_CACHE_KEY = "chatbot:knowledge:all";
 
-    // ========== 旧方案依赖（关键词匹配 + Redis 全量缓存，同时作为降级兜底） ==========
+    // ========== 短问答（knowledge 表） ==========
     @Autowired
     private ChatbotKnowledgeMapper knowledgeMapper;
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
-    // ========== 向量方案依赖 ==========
+    // ========== 向量检索 ==========
     @Autowired
     private JedisPooled jedisPooled;
     @Autowired
@@ -59,14 +58,21 @@ public class KnowledgeBaseTool implements Tool {
     @Autowired
     private VectorIndexManager indexManager;
 
-    @Value("${mkp.knowledge.vector.top-k:5}")
+    // ========== 长文档父子块检索 ==========
+    @Autowired
+    private ChunkRetrievalService chunkRetrievalService;
+
+    @Value("${mkp.knowledge.vector.top-k:10}")
     private int topK;
 
-    @Value("${mkp.knowledge.vector.similarity-threshold:0.75}")
+    @Value("${mkp.knowledge.vector.similarity-threshold:0.5}")
     private float threshold;
 
     @Value("${mkp.knowledge.vector.enabled:true}")
     private boolean vectorEnabled;
+
+    @Value("${mkp.knowledge.vector.chunk.enabled:true}")
+    private boolean chunkEnabled;
 
     @Override
     public String getName() {
@@ -75,7 +81,7 @@ public class KnowledgeBaseTool implements Tool {
 
     @Override
     public String getDescription() {
-        return "搜索宠物知识库，获取专业的宠物养护、疾病、饲养知识。" +
+        return "搜索宠物知识库，获取专业的宠物养护、疾病、喂养知识，以及长文档（饲养指南、健康手册）中的详细章节。" +
                "当用户询问宠物健康、饮食、行为、护理等专业问题时使用。";
     }
 
@@ -88,60 +94,66 @@ public class KnowledgeBaseTool implements Tool {
 
     @Override
     public String execute(Map<String, Object> parameters, ReActContext context) {
-        String keyword = parameters.get("keyword") != null ?
-                parameters.get("keyword").toString() : "";
+        String keyword = parameters.get("keyword") != null
+                ? parameters.get("keyword").toString() : "";
 
         if (keyword.isBlank()) {
             return "请提供搜索关键词";
         }
 
-        log.info("执行知识库搜索: keyword={}, vectorEnabled={}", keyword, vectorEnabled);
+        log.info("执行知识库检索: keyword={}, vectorEnabled={}, chunkEnabled={}",
+                keyword, vectorEnabled, chunkEnabled);
 
-        // ========== 路径 1：向量语义检索 ==========
-        if (vectorEnabled) {
-            List<KnowledgeMatch> matches = vectorSearch(keyword);
-            if (matches != null) {
-                if (!matches.isEmpty()) {
-                    return formatWithSimilarity(matches);
-                }
-                // 向量检索无结果，引导 LLM 换更短关键词重试
-                if (keyword.length() > 4) {
-                    return "未找到与 '" + keyword + "' 相关的知识库内容。请尝试用更简短的关键词重新搜索。";
-                }
-                return "未找到与 '" + keyword + "' 相关的知识库内容。";
-            }
-            // vectorSearch 返回 null = 向量检索不可用，走降级
-            log.info("向量检索不可用，降级到关键词匹配: {}", keyword);
+        // 第一路：长文档父子块（子块召回 → 父块整节）
+        String docBlock = "";
+        if (chunkEnabled) {
+            docBlock = chunkRetrievalService.searchAsText(keyword);
         }
 
-        // ========== 路径 2：关键词包含匹配（原逻辑 / 降级） ==========
+        // 第二路：短问答整条向量召回
+        if (vectorEnabled) {
+            List<KnowledgeMatch> matches = vectorSearch(keyword);
+            if (matches == null) {
+                log.info("向量检索不可用，降级到关键词匹配: {}", keyword);
+                return docBlock.isBlank() ? keywordSearch(keyword) : docBlock;
+            }
+            if (!matches.isEmpty()) {
+                String faq = formatWithSimilarity(matches);
+                return docBlock.isBlank() ? faq : docBlock + "\n\n" + faq;
+            }
+            if (!docBlock.isBlank()) {
+                return docBlock;
+            }
+            if (keyword.length() > 4) {
+                return "未找到与 '" + keyword + "' 相关的知识库内容。请尝试用更简短的关键词重新搜索。";
+            }
+            return "未找到与 '" + keyword + "' 相关的知识库内容。";
+        }
+
+        if (!docBlock.isBlank()) {
+            return docBlock;
+        }
         return keywordSearch(keyword);
     }
 
-    // ==================== 向量检索 ====================
+    // ==================== 向量检索（短问答） ====================
 
     /**
-     * 基于 Redis Stack 的向量语义检索
-     *
      * @return 匹配结果列表；空列表 = 无匹配；null = 检索不可用需降级
      */
     private List<KnowledgeMatch> vectorSearch(String query) {
-        // 确保索引已就绪（Redis 不支持 RediSearch 时返回 false）
         if (!indexManager.ensureIndex()) {
             return null;
         }
 
         try {
-            // Step 1: 查询文本 → Embedding 向量
             List<Float> queryVec = embeddingService.embed(query);
 
-            // Step 2: float[] → 4 字节小端序 byte[]（Redis FLOAT32 格式）
             ByteBuffer buf = ByteBuffer.allocate(queryVec.size() * 4);
             buf.order(ByteOrder.LITTLE_ENDIAN);
             queryVec.forEach(buf::putFloat);
             byte[] blob = buf.array();
 
-            // Step 3: Redis FT.SEARCH KNN 余弦相似度检索
             String queryExpr = "*=>[KNN " + topK + " @embedding $BLOB AS score]";
             SearchResult result = jedisPooled.ftSearch(VectorIndexManager.VECTOR_INDEX, queryExpr,
                     FTSearchParams.searchParams()
@@ -151,7 +163,6 @@ public class KnowledgeBaseTool implements Tool {
                             .addParam("BLOB", blob)
                             .dialect(2));
 
-            // Step 4: 解析结果并过滤低相似度
             return parseSearchResult(result);
 
         } catch (Exception e) {
@@ -161,8 +172,7 @@ public class KnowledgeBaseTool implements Tool {
     }
 
     /**
-     * 解析 FT.SEARCH 返回结果
-     * COSINE 距离越小越相似，相似度 = 1 - 距离
+     * COSINE 距离越小越相似，相似度 = 1 - 距离。
      */
     private List<KnowledgeMatch> parseSearchResult(SearchResult result) {
         List<KnowledgeMatch> matches = new ArrayList<>();
@@ -171,7 +181,6 @@ public class KnowledgeBaseTool implements Tool {
         }
 
         for (Document doc : result.getDocuments()) {
-            // 解析相似度分数
             float distance = 1.0f;
             String scoreStr = doc.getString("score");
             if (scoreStr != null) {
@@ -182,12 +191,10 @@ public class KnowledgeBaseTool implements Tool {
             }
             float similarity = Math.max(0f, Math.min(1f, 1f - distance));
 
-            // 过滤低相似度结果
             if (similarity < threshold) {
                 continue;
             }
 
-            // 从 Redis key 中解析知识 ID（key 格式：knowledge:vector:{id}）
             Object rawId = doc.getId();
             String keyStr = rawId instanceof byte[]
                     ? new String((byte[]) rawId, StandardCharsets.UTF_8)
@@ -214,7 +221,7 @@ public class KnowledgeBaseTool implements Tool {
         return s != null ? s : "";
     }
 
-    // ==================== 关键词匹配（原逻辑 / 降级方案） ====================
+    // ==================== 关键词兜底 ====================
 
     private String keywordSearch(String query) {
         try {
@@ -249,8 +256,8 @@ public class KnowledgeBaseTool implements Tool {
             return sb.toString();
 
         } catch (Exception e) {
-            log.error("知识库搜索失败", e);
-            return "知识库搜索失败: " + e.getMessage();
+            log.error("知识库检索失败", e);
+            return "知识库检索失败: " + e.getMessage();
         }
     }
 
@@ -273,9 +280,6 @@ public class KnowledgeBaseTool implements Tool {
 
     // ==================== 结果格式化 ====================
 
-    /**
-     * 向量检索结果格式化（附带相似度分数，帮助 LLM 判断相关性）
-     */
     private String formatWithSimilarity(List<KnowledgeMatch> matches) {
         StringBuilder result = new StringBuilder("找到以下相关知识库内容：\n\n");
         for (int i = 0; i < matches.size(); i++) {

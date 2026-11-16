@@ -46,6 +46,10 @@ spring:
           max-idle: 8
           min-idle: 0
           max-wait: -1ms
+  servlet:
+    multipart:
+      max-file-size: 10MB                    # 长文档上传上限
+      max-request-size: 10MB
 
 
 mybatis-plus:
@@ -71,9 +75,17 @@ mkp:
   knowledge:
     vector:
       enabled: true                          # 是否启用向量检索（false 则回退到关键词匹配）
-      top-k: 5                               # 返回 Top-K 条相似结果
-      similarity-threshold: 0.75             # 余弦相似度阈值，低于此值的结果过滤掉
+      top-k: 10                              # 返回 Top-K 条相似结果
+      similarity-threshold: 0.5              # 余弦相似度阈值，低于此值的结果过滤掉
       embedding-dim: 1024                    # text-embedding-v3 默认 1024 维
+      chunk:                                 # 长文档父子块
+        enabled: true
+        child-size: 300                      # 子块目标字数
+        child-overlap: 60                    # 子块重叠字数（约 20%）
+        parent-max-size: 1200                # 父块最大字数
+        recall-top-k: 20                     # 子块粗筛召回条数
+        max-parents: 4                       # 去重后最多返回几个父块
+        max-total-chars: 3000                # 拼给大模型的父块正文总字数上限
 
 # ========== Prompt 模板化管理配置 ==========
   chatbot:
