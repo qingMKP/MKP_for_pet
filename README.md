@@ -2,10 +2,10 @@
 
 一个基于 **Spring Cloud 微服务 + Vue 3** 的宠物社区平台，覆盖内容社区、托管交易与 AI 助手三大板块。
 
-- **后端**：8 个可独立部署的微服务 + 2 个公共模块，JDK 17 / Spring Boot 3.5 / Spring Cloud 2025 / Spring Cloud Alibaba 2025 / Nacos
+- **后端**：8 个可独立部署的微服务 + 2 个公共模块，JDK 21 / Spring Boot 3.5 / Spring Cloud 2025 / Spring Cloud Alibaba 2025 / Nacos
 - **前端**：Vue 3 + Vite + Element Plus + ECharts，共 21 个页面（含 6 个后台管理页）
-- **中间件**：MySQL 8 / Redis Stack / Elasticsearch 7.17 + IK / 阿里云 OSS
-- **AI**：Spring AI 1.1 + Spring AI Alibaba 1.1（DashScope / Qwen）、ChatClient + 原生工具调用、DashScope text-embedding-v3（1024 维）+ Redis Stack RediSearch 向量检索
+- **中间件**：MySQL 8 / Redis 7（缓存与计数）/ Milvus 3.0（向量库）/ Elasticsearch 7.17 + IK / 阿里云 OSS
+- **AI**：Spring AI 1.1 + Spring AI Alibaba 1.1（DashScope / Qwen）、ChatClient + 原生工具调用、DashScope text-embedding-v3（1024 维）+ Milvus HNSW 向量检索（父子块 + FAQ 双集合）
 
 ## 功能概览
 
@@ -41,7 +41,8 @@ flowchart TB
     end
     subgraph infra [中间件]
         MYSQL[(MySQL 8)]
-        REDIS[(Redis Stack)]
+        REDIS[(Redis)]
+        MILVUS[(Milvus)]
         ES[(Elasticsearch + IK)]
         OSS[阿里云 OSS]
         NACOS[(Nacos)]
@@ -56,6 +57,7 @@ flowchart TB
     BOT -. 查询用户 .-> USER
     AUTH & USER & POST & CHAT & BOT & PET --> MYSQL
     PET & BOT & POST --> REDIS
+    BOT --> MILVUS
     POST --> ES
     POST & USER & PET --> OSS
     BOT & PSVC --> EXT
@@ -72,7 +74,7 @@ flowchart TB
 | `mkp-user` | 8082 | 用户资料、好友关系、管理员用户管理 | — |
 | `mkp-post` | 8083 | 帖子 / 评论 / 点赞 / 浏览量、ES 全文检索、OSS 上传 | 浏览量 Redis 计数 + 定时刷库；ES 索引事务后异步同步 |
 | `mkp-chat` | 8084 | 会话消息、未读通知 | 跨服务用户信息 Redis 缓存 |
-| `mkp-chatbot` | 8085 | AI 助手：Spring AI ChatClient、`@Tool` 工具、RAG、Prompt 模板 | Qwen 对话 + DashScope 向量化；Redis Stack 向量检索 + 多级降级 |
+| `mkp-chatbot` | 8085 | AI 助手：Spring AI ChatClient、`@Tool` 工具、RAG、Prompt 模板 | Qwen 对话 + DashScope 向量化；Milvus 父子块向量检索 + 多级降级 |
 | `mkp-pet` | 8086 | 发布单 / 申请 / 托管订单 / 钱包资金 / 评价 / 交易广场 SSE | 7 态订单状态机 + CAS 条件更新 |
 | `mkp-pet-service` | 8087 | 宠物养护 AI 建议 | Spring AI ChatClient + Qwen（可切 DeepSeek） |
 
@@ -82,11 +84,12 @@ flowchart TB
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| JDK | 17 | |
+| JDK | 21 | |
 | Maven | 3.8+ | |
 | MySQL | 8.0 | 库名 `mkp_db` |
 | Nacos | 2.x | 单机 8848 |
-| Redis Stack | 7.2 | **必须是 Redis Stack**；普通 Redis 没有 RediSearch，向量检索会自动降级为关键词匹配 |
+| Redis | 7.x | 会话缓存、浏览量计数、向量同步互斥锁 |
+| Milvus | 3.0.6（单机 standalone） | 向量库，gRPC 19530；集合 `mkp_knowledge_chunk`（长文档子块）与 `mkp_knowledge_faq`（FAQ 知识） |
 | Elasticsearch | 7.17.22 + IK 分词插件 | 未安装可设 `ES_SEARCH_ENABLED=false`，检索降级为 MySQL LIKE |
 | Node.js | 18+ | 前端构建 |
 
@@ -119,7 +122,7 @@ cp .env.example .env
 
 ### 4. 启动
 
-1. 依次启动 MySQL、Redis Stack、Nacos、Elasticsearch
+1. 依次启动 MySQL、Redis、Milvus、Nacos、Elasticsearch
 2. 启动后端（8 个模块可并行启动，`*Application` 均在 IDE 中直接运行）
 
    ```bash
@@ -154,7 +157,7 @@ cp .env.example .env
 
 ### AI 助手：Spring AI + 原生工具调用 + SSE + RAG 降级
 
-模型层用 Spring AI Alibaba 的 DashScope Starter 自动装配 Qwen 对话与 text-embedding-v3；切换 DeepSeek 只改 `spring.ai.model.chat`。对话链路统一走 Spring AI `ChatClient`：工具用 `@Tool` 声明，由模型原生 function calling 调度，不再手写 ReAct 文本协议、正则解析和最多 5 轮的循环控制；SSE 用 `tool` / `token` / `done` 事件推送工具调用与回答片段。向量化走 Spring AI `EmbeddingModel`（DashScope text-embedding-v3，1024 维），检索仍是 Redis Stack HNSW 向量索引（`FT.SEARCH KNN` 余弦相似度 + 阈值过滤），Redis 不支持 RediSearch 时自动降级为关键词匹配。
+模型层用 Spring AI Alibaba 的 DashScope Starter 自动装配 Qwen 对话与 text-embedding-v3；切换 DeepSeek 只改 `spring.ai.model.chat`。对话链路统一走 Spring AI `ChatClient`：工具用 `@Tool` 声明，由模型原生 function calling 调度，不再手写 ReAct 文本协议、正则解析和最多 5 轮的循环控制；SSE 用 `tool` / `token` / `done` 事件推送工具调用与回答片段。向量化走 Spring AI `EmbeddingModel`（DashScope text-embedding-v3，1024 维），向量写入 Milvus：长文档子块进 `mkp_knowledge_chunk`（HNSW + COSINE），FAQ 知识进 `mkp_knowledge_faq`；检索是"子块召回 → parentId 回查 MySQL 父块整节"，按余弦阈值过滤，Milvus 不可用时降级为关键词匹配。长文档那一路带两层过滤：先按 `recall-threshold` 宽松召回 20 条，再用 DashScope `gte-rerank-v2` 对 (query, 子块) 逐条打相关性分、重排后按 `rerank.threshold` 截断；rerank 超时或不可用时自动沿用向量分，不阻塞问答。
 
 ## 目录结构
 
