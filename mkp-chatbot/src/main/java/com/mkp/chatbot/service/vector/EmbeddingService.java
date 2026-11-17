@@ -38,6 +38,12 @@ public class EmbeddingService {
 
     /**
      * 批量转向量，返回顺序与入参严格一致。
+     *
+     * 内部按 mkp.ai.embedding.batch-size（默认 10）切片，逐批调用 DashScope，
+     * 每批结果按原顺序追加，所以调用方可以直接用下标把 texts.get(i) 和结果对应起来。
+     *
+     * @param texts 待向量化文本，允许为 null 或空
+     * @return 与入参等长、顺序一致的向量列表；入参为空时返回空列表
      */
     public List<List<Float>> embedBatch(List<String> texts) {
         if (texts == null || texts.isEmpty()) {

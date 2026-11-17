@@ -6,24 +6,14 @@ import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.doc.ChunkRetrievalService;
 import com.mkp.chatbot.service.react.ReActContext;
 import com.mkp.chatbot.service.react.Tool;
-import com.mkp.chatbot.service.vector.EmbeddingService;
 import com.mkp.chatbot.service.vector.KnowledgeMatch;
-import com.mkp.chatbot.service.vector.VectorIndexManager;
+import com.mkp.chatbot.service.vector.KnowledgeVectorStore;
 import com.mkp.common.entity.ChatbotKnowledge;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
-import redis.clients.jedis.JedisPooled;
-import redis.clients.jedis.args.SortingOrder;
-import redis.clients.jedis.search.Document;
-import redis.clients.jedis.search.FTSearchParams;
-import redis.clients.jedis.search.SearchResult;
-
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -35,7 +25,7 @@ import java.util.concurrent.TimeUnit;
  *
  * 一次调用并行查两个库，结果拼成一段文字返回：
  * 1. 长文档父子块：子块向量召回 → 按 parentId 回查父块整节（ChunkRetrievalService）
- * 2. 短问答：knowledge 表整条向量召回（idx:knowledge:vector）
+ * 2. 短问答：knowledge 表整条向量召回（Milvus collection mkp_knowledge_faq）
  * 两条都没有命中时，降级到 keyword 字段的字面包含匹配。
  */
 @Slf4j
@@ -52,11 +42,7 @@ public class KnowledgeBaseTool implements Tool {
 
     // ========== 向量检索 ==========
     @Autowired
-    private JedisPooled jedisPooled;
-    @Autowired
-    private EmbeddingService embeddingService;
-    @Autowired
-    private VectorIndexManager indexManager;
+    private KnowledgeVectorStore knowledgeVectorStore;
 
     // ========== 长文档父子块检索 ==========
     @Autowired
@@ -142,83 +128,10 @@ public class KnowledgeBaseTool implements Tool {
      * @return 匹配结果列表；空列表 = 无匹配；null = 检索不可用需降级
      */
     private List<KnowledgeMatch> vectorSearch(String query) {
-        if (!indexManager.ensureIndex()) {
+        if (!knowledgeVectorStore.isAvailable()) {
             return null;
         }
-
-        try {
-            List<Float> queryVec = embeddingService.embed(query);
-
-            ByteBuffer buf = ByteBuffer.allocate(queryVec.size() * 4);
-            buf.order(ByteOrder.LITTLE_ENDIAN);
-            queryVec.forEach(buf::putFloat);
-            byte[] blob = buf.array();
-
-            String queryExpr = "*=>[KNN " + topK + " @embedding $BLOB AS score]";
-            SearchResult result = jedisPooled.ftSearch(VectorIndexManager.VECTOR_INDEX, queryExpr,
-                    FTSearchParams.searchParams()
-                            .sortBy("score", SortingOrder.ASC)
-                            .limit(0, topK)
-                            .returnFields("keyword", "answer", "category", "score")
-                            .addParam("BLOB", blob)
-                            .dialect(2));
-
-            return parseSearchResult(result);
-
-        } catch (Exception e) {
-            log.error("向量检索失败，降级到关键词匹配: query={}", query, e);
-            return null;
-        }
-    }
-
-    /**
-     * COSINE 距离越小越相似，相似度 = 1 - 距离。
-     */
-    private List<KnowledgeMatch> parseSearchResult(SearchResult result) {
-        List<KnowledgeMatch> matches = new ArrayList<>();
-        if (result == null || result.getTotalResults() == 0) {
-            return matches;
-        }
-
-        for (Document doc : result.getDocuments()) {
-            float distance = 1.0f;
-            String scoreStr = doc.getString("score");
-            if (scoreStr != null) {
-                try {
-                    distance = Float.parseFloat(scoreStr);
-                } catch (NumberFormatException ignored) {
-                }
-            }
-            float similarity = Math.max(0f, Math.min(1f, 1f - distance));
-
-            if (similarity < threshold) {
-                continue;
-            }
-
-            Object rawId = doc.getId();
-            String keyStr = rawId instanceof byte[]
-                    ? new String((byte[]) rawId, StandardCharsets.UTF_8)
-                    : String.valueOf(rawId);
-            long id;
-            try {
-                id = Long.parseLong(keyStr.replace(VectorIndexManager.VECTOR_KEY_PREFIX, ""));
-            } catch (NumberFormatException e) {
-                log.warn("无法从向量 key 解析知识 ID: {}", keyStr);
-                continue;
-            }
-
-            matches.add(new KnowledgeMatch(id,
-                    nvl(doc.getString("keyword")),
-                    nvl(doc.getString("answer")),
-                    nvl(doc.getString("category")),
-                    similarity));
-        }
-
-        return matches;
-    }
-
-    private String nvl(String s) {
-        return s != null ? s : "";
+        return knowledgeVectorStore.search(query, topK, threshold);
     }
 
     // ==================== 关键词兜底 ====================

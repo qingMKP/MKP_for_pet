@@ -78,6 +78,15 @@ mkp:
       top-k: 10                              # 返回 Top-K 条相似结果
       similarity-threshold: 0.5              # 余弦相似度阈值，低于此值的结果过滤掉
       embedding-dim: 1024                    # text-embedding-v3 默认 1024 维
+      milvus:                                # 向量库连接（长文档子块 + FAQ 知识共用）
+        uri: http://127.0.0.1:19530          # Milvus gRPC 地址
+        token: ""                            # 未开启鉴权留空；开启后填 "用户名:密码"
+        collection: mkp_knowledge_chunk      # 长文档子块向量集合
+        faq-collection: mkp_knowledge_faq    # FAQ 知识向量集合
+        m: 16                                # HNSW 每个节点最大出度
+        ef-construction: 200                 # 建索引时的候选队列长度
+        search-ef: 64                        # 检索候选队列长度（需 >= recall-top-k）
+        connect-timeout-ms: 5000
       chunk:                                 # 长文档父子块
         enabled: true
         child-size: 300                      # 子块目标字数
@@ -86,6 +95,13 @@ mkp:
         recall-top-k: 20                     # 子块粗筛召回条数
         max-parents: 4                       # 去重后最多返回几个父块
         max-total-chars: 3000                # 拼给大模型的父块正文总字数上限
+    rerank:                                  # 精排：向量召回之后再打一次相关性分
+      enabled: true
+      model: gte-rerank-v2
+      endpoint: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+      recall-threshold: 0.35                 # 开精排后向量召回的宽松阈值（多捞候选给它筛）
+      threshold: 0.15                        # 精排分阈值（gte-rerank 分数偏低，和余弦分不是一个尺度）
+      timeout-ms: 2000                       # 超时/失败直接降级为向量分排序
 
 # ========== Prompt 模板化管理配置 ==========
   chatbot:

@@ -3,53 +3,46 @@ package com.mkp.chatbot.service.vector;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.common.entity.ChatbotKnowledge;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import redis.clients.jedis.JedisPooled;
 
-import jakarta.annotation.PostConstruct;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 知识库向量同步服务
+ * 知识库向量同步服务。
  *
- * 负责在知识库变更后将文本转为 Embedding 向量并写入 Redis Stack。
+ * 负责在知识库变更后把文本转成 Embedding 并写入 Milvus。
  * 支持全量同步（启动时 / 手动触发）和单条增量同步（增删改时自动触发）。
+ * Redis 只承担同步互斥锁和关键词兜底缓存，不再存放向量。
  */
 @Slf4j
 @Service
 public class KnowledgeVectorSyncService {
 
+    private static final String SYNC_LOCK_KEY = "knowledge:vector:sync:lock";
+    private static final String KNOWLEDGE_CACHE_KEY = "chatbot:knowledge:all";
+
     private final ChatbotKnowledgeMapper knowledgeMapper;
     private final EmbeddingService embeddingService;
-    private final JedisPooled jedisPooled;
+    private final KnowledgeVectorStore knowledgeVectorStore;
     private final StringRedisTemplate stringRedisTemplate;
-    private final VectorIndexManager indexManager;
-
-    private static final String SYNC_LOCK_KEY = "knowledge:vector:sync:lock";
 
     @Value("${mkp.knowledge.vector.enabled:true}")
     private boolean enabled;
 
     public KnowledgeVectorSyncService(ChatbotKnowledgeMapper knowledgeMapper,
                                       EmbeddingService embeddingService,
-                                      JedisPooled jedisPooled,
-                                      StringRedisTemplate stringRedisTemplate,
-                                      VectorIndexManager indexManager) {
+                                      KnowledgeVectorStore knowledgeVectorStore,
+                                      StringRedisTemplate stringRedisTemplate) {
         this.knowledgeMapper = knowledgeMapper;
         this.embeddingService = embeddingService;
-        this.jedisPooled = jedisPooled;
+        this.knowledgeVectorStore = knowledgeVectorStore;
         this.stringRedisTemplate = stringRedisTemplate;
-        this.indexManager = indexManager;
     }
 
     /**
@@ -57,7 +50,9 @@ public class KnowledgeVectorSyncService {
      */
     @PostConstruct
     public void initOnStartup() {
-        if (!enabled) return;
+        if (!enabled) {
+            return;
+        }
 
         Thread thread = new Thread(() -> {
             try {
@@ -72,12 +67,12 @@ public class KnowledgeVectorSyncService {
     }
 
     /**
-     * 全量同步所有知识库数据到 Redis 向量索引
+     * 全量同步所有知识到 Milvus。
      * 调用时机：应用启动后首次加载 / 管理后台手动触发
      */
     public void syncAll() {
-        if (!enabled || !indexManager.ensureIndex()) {
-            log.warn("向量索引不可用或检索未启用，跳过全量同步");
+        if (!enabled || !knowledgeVectorStore.isAvailable()) {
+            log.warn("向量库不可用或检索未启用，跳过全量同步");
             return;
         }
 
@@ -100,22 +95,22 @@ public class KnowledgeVectorSyncService {
 
             log.info("开始全量向量同步，共 {} 条知识", list.size());
 
-            // 批量 Embedding（减少 API 调用次数）
-            List<String> texts = new ArrayList<>();
+            List<String> texts = new ArrayList<>(list.size());
             for (ChatbotKnowledge k : list) {
-                texts.add(k.getKeyword() + " " + k.getAnswer());
+                texts.add(embedText(k));
             }
             List<List<Float>> vectors = embeddingService.embedBatch(texts);
 
-            // 批量写入 Redis（JedisPooled 自动管理连接）
+            List<KnowledgeVectorStore.KnowledgeVector> rows = new ArrayList<>(list.size());
             for (int i = 0; i < list.size(); i++) {
-                writeVector(list.get(i), vectors.get(i));
+                rows.add(new KnowledgeVectorStore.KnowledgeVector(list.get(i), vectors.get(i)));
             }
+            knowledgeVectorStore.writeBatch(rows);
 
-            log.info("向量同步完成，已写入 {} 条向量", list.size());
+            log.info("向量同步完成，已写入 {} 条向量", rows.size());
 
             // 删除旧的 JSON 全量缓存，避免与新向量数据不一致
-            stringRedisTemplate.delete("chatbot:knowledge:all");
+            stringRedisTemplate.delete(KNOWLEDGE_CACHE_KEY);
 
         } catch (Exception e) {
             log.error("向量同步失败", e);
@@ -128,7 +123,9 @@ public class KnowledgeVectorSyncService {
      * 单条同步（新增 / 修改知识时调用）
      */
     public void syncOne(Long knowledgeId) {
-        if (!enabled || !indexManager.ensureIndex()) return;
+        if (!enabled || !knowledgeVectorStore.isAvailable()) {
+            return;
+        }
 
         try {
             ChatbotKnowledge k = knowledgeMapper.selectById(knowledgeId);
@@ -137,9 +134,9 @@ public class KnowledgeVectorSyncService {
                 return;
             }
 
-            String text = k.getKeyword() + " " + k.getAnswer();
-            List<Float> vector = embeddingService.embed(text);
-            writeVector(k, vector);
+            List<Float> vector = embeddingService.embed(embedText(k));
+            knowledgeVectorStore.writeBatch(
+                    List.of(new KnowledgeVectorStore.KnowledgeVector(k, vector)));
 
             log.info("单条向量同步完成: id={}", knowledgeId);
         } catch (Exception e) {
@@ -151,8 +148,10 @@ public class KnowledgeVectorSyncService {
      * 删除单条知识的向量（逻辑删除知识后调用）
      */
     public void removeOne(Long knowledgeId) {
-        if (!enabled || knowledgeId == null) return;
-        jedisPooled.del(VectorIndexManager.VECTOR_KEY_PREFIX + knowledgeId);
+        if (!enabled || knowledgeId == null) {
+            return;
+        }
+        knowledgeVectorStore.removeAll(List.of(knowledgeId));
         log.info("已删除知识向量: id={}", knowledgeId);
     }
 
@@ -160,41 +159,16 @@ public class KnowledgeVectorSyncService {
      * 批量删除知识向量（批量逻辑删除后调用）
      */
     public void removeMany(List<Long> ids) {
-        if (!enabled || ids == null || ids.isEmpty()) return;
-        for (Long id : ids) {
-            jedisPooled.del(VectorIndexManager.VECTOR_KEY_PREFIX + id);
+        if (!enabled || ids == null || ids.isEmpty()) {
+            return;
         }
+        knowledgeVectorStore.removeAll(ids);
         log.info("已批量删除知识向量: {} 条", ids.size());
     }
 
-    /**
-     * 将单条知识的向量字段写入 Redis Hash（binary 方式，避免编码问题）
-     */
-    private void writeVector(ChatbotKnowledge k, List<Float> vector) {
-        byte[] rawKey = (VectorIndexManager.VECTOR_KEY_PREFIX + k.getId()).getBytes(StandardCharsets.UTF_8);
-
-        Map<byte[], byte[]> fields = new HashMap<>();
-        fields.put("keyword".getBytes(StandardCharsets.UTF_8), safeBytes(k.getKeyword()));
-        fields.put("answer".getBytes(StandardCharsets.UTF_8), safeBytes(k.getAnswer()));
-        fields.put("category".getBytes(StandardCharsets.UTF_8), safeBytes(k.getCategory()));
-        fields.put("embedding".getBytes(StandardCharsets.UTF_8), floatsToBytes(vector));
-
-        jedisPooled.hset(rawKey, fields);
-    }
-
-    private byte[] safeBytes(String s) {
-        return (s != null ? s : "").getBytes(StandardCharsets.UTF_8);
-    }
-
-    /**
-     * float 列表 → 小端序 4 字节 float 数组
-     */
-    private byte[] floatsToBytes(List<Float> floats) {
-        ByteBuffer buf = ByteBuffer.allocate(floats.size() * 4);
-        buf.order(ByteOrder.LITTLE_ENDIAN);
-        for (float f : floats) {
-            buf.putFloat(f);
-        }
-        return buf.array();
+    private String embedText(ChatbotKnowledge k) {
+        String keyword = k.getKeyword() == null ? "" : k.getKeyword();
+        String answer = k.getAnswer() == null ? "" : k.getAnswer();
+        return keyword + " " + answer;
     }
 }
