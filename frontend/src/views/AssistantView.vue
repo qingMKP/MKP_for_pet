@@ -95,13 +95,24 @@ async function openConversation (c) {
       content: m.content || '',
       thinking: '',
       tools: [],
-      posts: [],
-      postings: []
+      posts: parseJsonList(m.postsJson),
+      postings: parseJsonList(m.postingsJson)
     }))
   } catch {
     messages.value = []
   }
   scrollBottom()
+}
+
+function parseJsonList (raw) {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw !== 'string' || !raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
 }
 
 async function removeConversation (c) {

@@ -1,7 +1,5 @@
 package com.mkp.chatbot.service.impl;
 
-import cn.hutool.json.JSONArray;
-import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -11,6 +9,8 @@ import com.mkp.chatbot.mapper.ChatbotKnowledgeMapper;
 import com.mkp.chatbot.service.ChatbotService;
 import com.mkp.chatbot.service.prompt.PromptTemplateService;
 import com.mkp.chatbot.service.planner.LightweightPlanner;
+import com.mkp.chatbot.service.planner.LightweightPlanner.Plan;
+import com.mkp.chatbot.service.planner.LightweightPlanner.Step;
 import com.mkp.chatbot.service.planner.Scratchpad;
 import com.mkp.chatbot.service.planner.StepResult;
 import com.mkp.chatbot.service.react.ReActContext;
@@ -20,13 +20,16 @@ import com.mkp.chatbot.service.tool.ChatbotTools;
 import com.mkp.chatbot.service.tool.ObservableToolCallback;
 import com.mkp.chatbot.service.vector.KnowledgeVectorSyncService;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import com.mkp.common.dto.ChatbotReplyVO;
+import com.mkp.common.dto.ChatbotPostVO;
 import com.mkp.common.dto.KnowledgeSaveDTO;
+import com.mkp.common.dto.PostingVO;
 import com.mkp.common.entity.ChatbotConversation;
 import com.mkp.common.entity.ChatbotKnowledge;
 import com.mkp.common.entity.ChatbotMessage;
@@ -55,9 +58,6 @@ import java.util.regex.Pattern;
 @Service
 public class ChatbotServiceImpl implements ChatbotService {
 
-    private static final String SESSION_KEY_PREFIX = "chatbot:session:";
-    private static final long SESSION_TTL_MINUTES = 30;
-    private static final int MAX_HISTORY_ROUNDS = 10;
     /**
      * 子任务执行器的系统提示。
      *
@@ -79,7 +79,7 @@ public class ChatbotServiceImpl implements ChatbotService {
     private final ChatbotMessageMapper messageMapper;
 
     @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    private ChatMemory chatMemory;
 
     @Autowired
     private ChatClient chatClient;
@@ -88,7 +88,10 @@ public class ChatbotServiceImpl implements ChatbotService {
     private ChatbotTools chatbotTools;
 
     @Autowired
-    private IntentRouter intentRouter;     @Autowired     private LightweightPlanner lightweightPlanner;
+    private IntentRouter intentRouter;
+
+    @Autowired
+    private LightweightPlanner lightweightPlanner;
 
     @Autowired
     private ToolRegistry toolRegistry;
@@ -110,7 +113,7 @@ public class ChatbotServiceImpl implements ChatbotService {
         this.messageMapper = messageMapper;
     }
 
-    // ==================== 核心问答（ReAct 版本） ====================
+    // ==================== 核心问答（同步版） ====================
 
     @Override
     public R<ChatbotReplyVO> ask(String question, Long conversationId) {
@@ -136,11 +139,7 @@ public class ChatbotServiceImpl implements ChatbotService {
             conversationId = conv.getId();
         }
 
-        // 第二步：从 Redis 读取历史消息（Redis 优先，MySQL 兜底）
-        List<Map<String, String>> history = loadHistory(userId, conversationId);
-
-        // 第三步：构建历史消息（Spring AI 原生 Message）
-        List<Message> messages = toSpringMessages(history);
+        // 第二步：历史由 Spring AI ChatMemory 管理，调用时经 advisor 自动注入
 
         // 第四步：意图路由 + Spring AI 调用，工具由模型原生 function calling 驱动
         // 路由器只裁剪本次挂载的工具集合；分类失败或超时统一降级 MIXED（等价于改造前的全量挂载）
@@ -149,11 +148,13 @@ public class ChatbotServiceImpl implements ChatbotService {
                 routing.intent(), routing.source(), routing.costMs(), question);
 
         ReActContext context = new ReActContext();
+        String conversationKey = String.valueOf(conversationId);
         String answer;
         try {
             answer = chatClient.prompt()
+                    .advisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                    .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationKey))
                     .system(buildSystemPrompt(routing.intent().toolNames()))
-                    .messages(messages)
                     .user(question)
                     .toolCallbacks(filterToolCallbacks(routing.intent()))
                     .toolContext(Map.of("mkpContext", context))
@@ -168,13 +169,10 @@ public class ChatbotServiceImpl implements ChatbotService {
             answer = "抱歉，我暂时无法回答您的问题，请稍后再试。";
         }
 
-        // 第五步：将本轮问答写入历史
-        history.add(Map.of("role", "user", "content", question));
-        history.add(Map.of("role", "assistant", "content", answer));
-        trimAndSaveHistory(userId, conversationId, history);
+        // 第五步：本轮问答由 ChatMemoryAdvisor 在调用结束时自动写回
 
         // 第六步：写入 MySQL（持久化）
-        saveToMySQL(conversationId, question, answer);
+        saveToMySQL(conversationId, question, answer, context.getRelatedPosts(), context.getRelatedPostings());
 
         long costTime = System.currentTimeMillis() - startTime;
         log.info("回答完成，耗时: {}ms", costTime);
@@ -224,11 +222,8 @@ public class ChatbotServiceImpl implements ChatbotService {
                 conversationId = conv.getId();
             }
 
-            // 第二步：从 Redis 读取历史消息（复用）
-            List<Map<String, String>> history = loadHistory(userId, conversationId);
-
-            // 第三步：构建历史消息（Spring AI 原生 Message）
-            List<Message> messages = toSpringMessages(history);
+            // 第二步：规划器需要的历史从 ChatMemory 读，主回答的历史由 advisor 自动注入
+            List<Map<String, String>> history = historyForPlanner(conversationId);
 
             // 第四步：Spring AI 流式调用，工具由模型原生 function calling 驱动
             ReActContext context = new ReActContext();
@@ -241,31 +236,28 @@ public class ChatbotServiceImpl implements ChatbotService {
 
             // 多意图才做全局规划：规划 → 分步执行 → 一次性流式汇总；规划不可用则回退单轮
             String answer = null;
-            LightweightPlanner.Plan plan = buildPlan(routing, question, history, emitter);
+            Plan plan = buildPlan(routing, question, history, emitter);
             if (plan != null) {
-                answer = executePlan(plan, question, messages, context, emitter);
+                answer = executePlan(plan, question, conversationId, context, emitter);
             }
             if (answer == null) {
-                answer = streamAnswer(question, messages,
+                answer = streamAnswer(question,
                         buildSystemPrompt(routing.intent().toolNames()),
                         observableCallbacks(routing.intent(), emitter),
-                        context, emitter);
+                        context, emitter, conversationId);
             }
             if (answer == null) {
                 emitter.complete();
                 return;
             }
 
-            // 第五步：将本轮问答写入历史（复用）
+            // 第五步：本轮问答由 ChatMemoryAdvisor 自动写回
             if (answer == null || answer.isBlank()) {
                 answer = "抱歉，我暂时无法回答您的问题，请稍后再试。";
             }
-            history.add(Map.of("role", "user", "content", question));
-            history.add(Map.of("role", "assistant", "content", answer));
-            trimAndSaveHistory(userId, conversationId, history);
 
             // 第六步：写入 MySQL 持久化（复用）
-            saveToMySQL(conversationId, question, answer);
+            saveToMySQL(conversationId, question, answer, context.getRelatedPosts(), context.getRelatedPostings());
 
             // 第七步：发送 done 事件
             Map<String, Object> doneData = new HashMap<>();
@@ -342,12 +334,12 @@ public class ChatbotServiceImpl implements ChatbotService {
     /**
      * 只有多意图才值得做全局规划；单意图、规划失败、拆不出 2 步都返回 null，走原来的单轮链路。
      */
-    private LightweightPlanner.Plan buildPlan(IntentRouter.RoutingResult routing, String question,
+    private Plan buildPlan(IntentRouter.RoutingResult routing, String question,
                                               List<Map<String, String>> history, SseEmitter emitter) {
         if (routing.intent() != IntentRouter.Intent.MIXED || !lightweightPlanner.isEnabled()) {
             return null;
         }
-        LightweightPlanner.Plan plan = lightweightPlanner.plan(question, history);
+        Plan plan = lightweightPlanner.plan(question, history);
         log.info("任务规划：steps={} source={} cost={}ms question={}",
                 plan.steps().size(), plan.source(), plan.costMs(), question);
         if (!plan.usable()) {
@@ -355,7 +347,7 @@ public class ChatbotServiceImpl implements ChatbotService {
         }
         StringBuilder summary = new StringBuilder("已拆解为 ").append(plan.steps().size()).append(" 个步骤：");
         for (int i = 0; i < plan.steps().size(); i++) {
-            LightweightPlanner.Step step = plan.steps().get(i);
+            Step step = plan.steps().get(i);
             if (i > 0) {
                 summary.append("；");
             }
@@ -368,13 +360,13 @@ public class ChatbotServiceImpl implements ChatbotService {
     /**
      * 按计划逐个子任务执行（每个子任务只带一类工具），最后把各步结果一次性汇总。
      */
-    private String executePlan(LightweightPlanner.Plan plan, String question, List<Message> messages,
+    private String executePlan(Plan plan, String question, Long conversationId,
                                ReActContext context, SseEmitter emitter) {
         StringBuilder evidence = new StringBuilder();
         // 结构化共享区：上游步骤产出的事实，供下游步骤检索时参考
         Scratchpad scratchpad = new Scratchpad();
         int index = 1;
-        for (LightweightPlanner.Step step : plan.steps()) {
+        for (Step step : plan.steps()) {
             sendEvent(emitter, "think", Map.of("content",
                     "第" + index + "步：" + intentLabel(step.intent()) + " - " + stepText(step, question)));
             String stateBlock = scratchpad.toPromptBlock();
@@ -394,14 +386,14 @@ public class ChatbotServiceImpl implements ChatbotService {
             scratchpad.addTrace(intentLabel(step.intent()), result.answer());
             index++;
         }
-        return streamAnswer(question, messages, buildSynthesisPrompt(evidence.toString(), scratchpad),
-                List.of(), context, emitter);
+        return streamAnswer(question, buildSynthesisPrompt(evidence.toString(), scratchpad),
+                List.of(), context, emitter, conversationId);
     }
 
     /**
      * 执行单个子任务：非流式调用，只挂该子任务对应的一类工具，工具事件照常推给前端。
      */
-    private StepResult runStep(LightweightPlanner.Step step, String question, String stateBlock,
+    private StepResult runStep(Step step, String question, String stateBlock,
                                ReActContext context, SseEmitter emitter) {
         String task = stepText(step, question);
         String userText = stateBlock.isBlank() ? "当前子任务：" + task : stateBlock + "\n当前子任务：" + task;
@@ -423,15 +415,17 @@ public class ChatbotServiceImpl implements ChatbotService {
     /**
      * 流式执行一次问答，token 事件逐段推送。返回 null 表示已向客户端发过 error 事件。
      */
-    private String streamAnswer(String question, List<Message> messages, String systemPrompt,
-                                List<ToolCallback> toolCallbacks, ReActContext context, SseEmitter emitter) {
+    private String streamAnswer(String question, String systemPrompt,
+                                List<ToolCallback> toolCallbacks, ReActContext context, SseEmitter emitter,
+                                Long conversationId) {
         StringBuilder answerBuffer = new StringBuilder();
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
 
         chatClient.prompt()
+                .advisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, String.valueOf(conversationId)))
                 .system(systemPrompt)
-                .messages(messages)
                 .user(question)
                 .toolCallbacks(toolCallbacks)
                 .toolContext(Map.of("mkpContext", context))
@@ -517,7 +511,7 @@ public class ChatbotServiceImpl implements ChatbotService {
      * 有 subject 时由 subject 兜住指代，query 里出现"它"也无所谓；
      * 没有 subject 且 query 里还带代词，才是真的没法消解，退回原问题当检索输入。
      */
-    private String stepText(LightweightPlanner.Step step, String question) {
+    private String stepText(Step step, String question) {
         String subject = step.subject() == null ? "" : step.subject().trim();
         String query = step.query() == null ? "" : step.query().trim();
         if (!subject.isEmpty()) {
@@ -560,22 +554,19 @@ public class ChatbotServiceImpl implements ChatbotService {
     }
 
     /**
-     * 把 Redis 里的历史记录转换为 Spring AI 的 Message。
+     * 意图规划器需要的历史上下文：从 ChatMemory 取窗口内的消息，转成 role/content 列表。
      */
-    private List<Message> toSpringMessages(List<Map<String, String>> history) {
-        List<Message> messages = new ArrayList<>(history.size());
-        for (Map<String, String> item : history) {
-            String content = item.get("content");
-            if (content == null || content.isEmpty()) {
+    private List<Map<String, String>> historyForPlanner(Long conversationId) {
+        List<Message> window = chatMemory.get(String.valueOf(conversationId));
+        List<Map<String, String>> history = new ArrayList<>(window.size());
+        for (Message message : window) {
+            String content = message.getText();
+            if (content == null || content.isBlank()) {
                 continue;
             }
-            if ("assistant".equalsIgnoreCase(item.get("role"))) {
-                messages.add(new AssistantMessage(content));
-            } else {
-                messages.add(new UserMessage(content));
-            }
+            history.add(Map.of("role", message.getMessageType().getValue(), "content", content));
         }
-        return messages;
+        return history;
     }
 
     /**
@@ -627,71 +618,14 @@ public class ChatbotServiceImpl implements ChatbotService {
         conversationMapper.delete(new LambdaQueryWrapper<ChatbotConversation>()
                 .eq(ChatbotConversation::getId, conversationId)
                 .eq(ChatbotConversation::getUserId, userId));
-        stringRedisTemplate.delete(SESSION_KEY_PREFIX + userId + ":" + conversationId);
+        chatMemory.clear(String.valueOf(conversationId));
         return R.ok();
-    }
-
-    // ==================== Redis 历史读写 ====================
-
-    private List<Map<String, String>> loadHistory(Long userId, Long conversationId) {
-        String redisKey = SESSION_KEY_PREFIX + userId + ":" + conversationId;
-        String historyJson = stringRedisTemplate.opsForValue().get(redisKey);
-
-        if (historyJson != null && !historyJson.isEmpty()) {
-            return parseHistoryJson(historyJson);
-        }
-
-        // Redis 未命中 -> MySQL 兜底
-        List<ChatbotMessage> msgList = messageMapper.selectList(
-                new LambdaQueryWrapper<ChatbotMessage>()
-                        .eq(ChatbotMessage::getConversationId, conversationId)
-                        .orderByAsc(ChatbotMessage::getCreateTime)
-                        .last("LIMIT " + MAX_HISTORY_ROUNDS * 2));
-
-        List<Map<String, String>> history = new ArrayList<>();
-        for (ChatbotMessage msg : msgList) {
-            Map<String, String> map = new HashMap<>();
-            map.put("role", msg.getRole());
-            map.put("content", msg.getContent());
-            history.add(map);
-        }
-
-        if (!history.isEmpty()) {
-            stringRedisTemplate.opsForValue().set(
-                    redisKey, JSONUtil.toJsonStr(history),
-                    SESSION_TTL_MINUTES, TimeUnit.MINUTES);
-        }
-
-        return history;
-    }
-
-    private void trimAndSaveHistory(Long userId, Long conversationId, List<Map<String, String>> history) {
-        while (history.size() > MAX_HISTORY_ROUNDS * 2) {
-            history.remove(0);
-        }
-
-        String redisKey = SESSION_KEY_PREFIX + userId + ":" + conversationId;
-        stringRedisTemplate.opsForValue().set(
-                redisKey, JSONUtil.toJsonStr(history),
-                SESSION_TTL_MINUTES, TimeUnit.MINUTES);
-    }
-
-    private List<Map<String, String>> parseHistoryJson(String json) {
-        JSONArray array = JSONUtil.parseArray(json);
-        List<Map<String, String>> history = new ArrayList<>();
-        for (int i = 0; i < array.size(); i++) {
-            JSONObject obj = array.getJSONObject(i);
-            Map<String, String> map = new HashMap<>();
-            map.put("role", obj.getStr("role"));
-            map.put("content", obj.getStr("content"));
-            history.add(map);
-        }
-        return history;
     }
 
     // ==================== MySQL 持久化 ====================
 
-    private void saveToMySQL(Long conversationId, String question, String reply) {
+    private void saveToMySQL(Long conversationId, String question, String reply,
+                             List<ChatbotPostVO> posts, List<PostingVO> postings) {
         ChatbotMessage userMsg = new ChatbotMessage();
         userMsg.setConversationId(conversationId);
         userMsg.setRole("user");
@@ -702,6 +636,12 @@ public class ChatbotServiceImpl implements ChatbotService {
         assistantMsg.setConversationId(conversationId);
         assistantMsg.setRole("assistant");
         assistantMsg.setContent(reply);
+        if (posts != null && !posts.isEmpty()) {
+            assistantMsg.setPostsJson(JSONUtil.toJsonStr(posts));
+        }
+        if (postings != null && !postings.isEmpty()) {
+            assistantMsg.setPostingsJson(JSONUtil.toJsonStr(postings));
+        }
         messageMapper.insert(assistantMsg);
 
         conversationMapper.update(null,
